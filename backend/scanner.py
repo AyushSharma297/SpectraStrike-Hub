@@ -95,89 +95,163 @@ async def scan_wled_subnet(subnet, timeout=0.4):
     wled_devices = [r for r in results if r is not None]
     return wled_devices
 
-async def scan_wiz_broadcast(subnets=None, timeout=1.5):
-    """Sends UDP broadcast and unicast packets to discover WiZ lights."""
+async def scan_wiz_broadcast(subnets=None, timeout=3.0):
+    """Sends UDP broadcast and unicast packets to discover WiZ lights.
+    
+    Uses a thread-based blocking recv loop instead of loop.add_reader(),
+    which is not supported on Windows ProactorEventLoop (used by uvicorn).
+    """
     if subnets is None:
         subnets = get_all_local_subnets()
         
     logger.info("Sending WiZ UDP discovery packets (broadcast + unicast)...")
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-    sock.setblocking(False)
     
-    msg = b'{"method":"getSystemConfig","params":{}}'
     devices = []
     discovered_ips = set()
     
-    try:
-        # 1. Global Broadcast
+    def _blocking_scan():
+        """Runs blocking UDP discovery in a thread so asyncio is not blocked."""
+        # Create two sockets: one for sending, one for receiving broadcasts
+        send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        
+        # Receive socket: bind to the broadcast port to listen for responses
+        recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        recv_sock.settimeout(0.5)  # Short timeout per recv attempt
+        
+        # Try to bind to port 38899 on all interfaces to receive responses
         try:
-            sock.sendto(msg, ('255.255.255.255', 38899))
-        except Exception:
-            pass
-            
-        # 2. Subnet-Specific Broadcast & Unicast Scans
-        for subnet in subnets:
-            # Subnet broadcast (e.g. 192.168.1.255)
+            recv_sock.bind(("0.0.0.0", 38899))
+            logger.debug("Bound to port 38899 for WiZ discovery responses")
+        except OSError as e:
+            # Port might be in use, bind to any available port instead
+            logger.debug(f"Could not bind to port 38899 (may be in use): {e}, using any port instead")
             try:
-                sock.sendto(msg, (f"{subnet}255", 38899))
-            except Exception:
-                pass
-                
-            # Unicast scan (sends direct UDP to every IP in the /24 range)
-            # This is extremely effective when router AP/client isolation blocks broadcasts.
-            for i in range(1, 255):
+                recv_sock.bind(("0.0.0.0", 0))
+            except Exception as e2:
+                logger.warning(f"Could not bind WiZ discovery receive socket: {e2}")
+        
+        # Try multiple WiZ discovery methods to maximize detection
+        discovery_methods = [
+            b'{"method":"getSystemConfig","params":{}}',
+            b'{"method":"getStatus","params":{}}',
+            b'{"method":"getPilot","params":{}}',
+            b'{"method":"getAvailableMode","params":{}}',
+        ]
+        
+        try:
+            # 1. Global Broadcast
+            for msg in discovery_methods:
                 try:
-                    sock.sendto(msg, (f"{subnet}{i}", 38899))
-                except Exception:
-                    pass
+                    send_sock.sendto(msg, ('255.255.255.255', 38899))
+                    logger.debug(f"Sent WiZ discovery to 255.255.255.255:38899")
+                except Exception as e:
+                    logger.debug(f"Failed to send broadcast: {e}")
                     
-        loop = asyncio.get_running_loop()
-        end_time = loop.time() + timeout
-        
-        while loop.time() < end_time:
-            time_left = end_time - loop.time()
-            if time_left <= 0:
-                break
-            try:
-                fut = loop.create_future()
-                def read_callback():
-                    if fut.done():
-                        return
+            # 2. Subnet-Specific Broadcast & Unicast Scans
+            for subnet in subnets:
+                # Subnet broadcast (e.g. 192.168.1.255)
+                for msg in discovery_methods:
                     try:
-                        data, addr = sock.recvfrom(1024)
-                        fut.set_result((data, addr))
+                        send_sock.sendto(msg, (f"{subnet}255", 38899))
+                        logger.debug(f"Sent WiZ discovery to {subnet}255:38899")
                     except Exception as e:
-                        fut.set_exception(e)
-                
-                loop.add_reader(sock.fileno(), read_callback)
+                        logger.debug(f"Failed to send to {subnet}255: {e}")
+                    
+                # Unicast scan (sends direct UDP to every IP in the /24 range)
+                # This is extremely effective when router AP/client isolation blocks broadcasts.
+                for i in range(1, 255):
+                    for msg in discovery_methods:
+                        try:
+                            send_sock.sendto(msg, (f"{subnet}{i}", 38899))
+                        except Exception:
+                            pass  # Silently skip individual unicast failures
+            
+            # 3. Collect responses for the duration of `timeout`
+            import time
+            end_time = time.monotonic() + timeout
+            
+            while time.monotonic() < end_time:
                 try:
-                    data, addr = await asyncio.wait_for(fut, timeout=time_left)
+                    data, addr = recv_sock.recvfrom(2048)
                     ip = addr[0]
-                    if ip not in discovered_ips:
-                        res = json.loads(data.decode('utf-8'))
-                        if "result" in res and "mac" in res["result"]:
-                            discovered_ips.add(ip)
-                            devices.append({
-                                "id": f"wiz_{ip.replace('.', '_')}",
-                                "ip": ip,
-                                "mac": res["result"]["mac"],
-                                "type": "wiz",
-                                "name": f"WiZ Light ({ip})",
-                                "model": res["result"].get("modelType", "Unknown WiZ"),
-                                "is_mock": False
-                            })
-                finally:
-                    loop.remove_reader(sock.fileno())
-            except asyncio.TimeoutError:
-                break
-            except Exception:
-                await asyncio.sleep(0.05)
-    except Exception as e:
-        logger.error(f"WiZ broadcast/unicast discovery failed: {e}")
-    finally:
-        sock.close()
-        
+
+                    # De-dupe by IP; we still allow updates if parsing succeeds.
+                    if ip in discovered_ips:
+                        continue
+
+                    raw_text = data[:512].decode('utf-8', errors='replace')
+                    logger.debug(f"WiZ response from {ip}: {raw_text[:100]}")
+
+                    discovered = False
+                    mac = None
+                    model = None
+                    is_valid_wiz_response = False
+
+                    try:
+                        res = json.loads(data.decode('utf-8', errors='ignore'))
+                        is_valid_wiz_response = True
+
+                        # Common response shapes vary by firmware.
+                        # 1) {"result": {"mac": "...", "modelType": "..."}}
+                        if isinstance(res, dict) and isinstance(res.get("result"), dict):
+                            mac = res["result"].get("mac")
+                            model = res["result"].get("modelType") or res["result"].get("model")
+
+                        # 2) {"mac": "..."}
+                        if mac is None and isinstance(res, dict):
+                            mac = res.get("mac")
+                            model = model or res.get("modelType") or res.get("model")
+                            
+                        # 3) Any dict response with "method" or "result" is likely WiZ
+                        if isinstance(res, dict) and ("method" in res or "result" in res or "id" in res):
+                            is_valid_wiz_response = True
+
+                    except Exception:
+                        # Not JSON - but might still be a WiZ device responding
+                        res = None
+                        # Check if response contains expected patterns
+                        if b"method" in data or b"result" in data or len(data) > 10:
+                            is_valid_wiz_response = True
+
+                    # Accept discovery if we got a valid WiZ response (JSON or non-JSON pattern match)
+                    if is_valid_wiz_response:
+                        discovered_ips.add(ip)
+                        devices.append({
+                            "id": f"wiz_{ip.replace('.', '_')}",
+                            "ip": ip,
+                            "mac": mac,
+                            "type": "wiz",
+                            "name": f"WiZ Light ({ip})",
+                            "model": model or "Unknown WiZ",
+                            "is_mock": False
+                        })
+                        logger.info(
+                            f"Discovered WiZ light at {ip}" + (f" (MAC: {mac})" if mac else "")
+                        )
+                        discovered = True
+
+                    if not discovered:
+                        logger.debug(f"WiZ discovery response from {ip} (unrecognized): {raw_text[:100]}")
+                except socket.timeout:
+                    # No data received in this window; keep trying until end_time
+                    continue
+                except OSError:
+                    break
+        except Exception as e:
+            logger.error(f"WiZ broadcast/unicast discovery failed: {e}")
+        finally:
+            send_sock.close()
+            recv_sock.close()
+    
+    # Run the blocking scan in a thread executor
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _blocking_scan)
+    
+    logger.info(f"WiZ scan complete. Found {len(devices)} WiZ device(s).")
     return devices
 
 async def scan_openrgb(timeout=0.5):

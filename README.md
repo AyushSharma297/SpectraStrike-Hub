@@ -352,16 +352,21 @@ wled-wiz-hub/
 
 ---
 
-## 8. Licensing, Ownership & Non-Commercial Terms
+## 8. Licensing & Commercial Use
 
 ### 8.1 Ownership & Copyright
-SpectraStrike Hub is authored and owned exclusively by **Aayush**. Copyright (c) 2026 Aayush. All rights reserved.
+SpectraStrike Hub is authored and owned exclusively by **YOUR_NAME**. Copyright (c) 2026 YOUR_NAME. All rights reserved.
 
-### 8.2 Non-Commercial Restriction
-This project is licensed under a **Custom Personal and Non-Commercial License**. Under these terms:
-* **Allowed**: You are encouraged to clone, run, modify, study, and integrate this software for your own personal, hobbyist, educational, or private ambient setups.
-* **Prohibited**: You **cannot** use this repository, compiled outputs, or derivative works for commercial earnings, monetization, renting, leasing, reselling, or profit-making setups (such as monetized professional streams, retail installations, or commercial venues).
-* **Modifications**: Modified versions can only be distributed under the same non-commercial, personal-use limitations, keeping the owner's copyright header intact.
+### 8.2 Non-Commercial License (PolyForm Noncommercial 1.0.0)
+This repository is released under the **PolyForm Noncommercial License 1.0.0**.
+* **Allowed**: You are encouraged to view, learn from, fork, modify, and use this software for your own personal, hobbyist, educational, or research purposes.
+* **Prohibited**: You **cannot** use this software for any commercial purposes (e.g., in paid products, retail environments, professional monetized setups, or internal operations of a for-profit business) under this license.
+
+Please read the full terms in the [`LICENSE.md`](LICENSE.md) file.
+
+### 8.3 Commercial Licensing
+If you wish to use SpectraStrike Hub for a commercial purpose, you must obtain a commercial license. 
+Please see [`COMMERCIAL_LICENSE.md`](COMMERCIAL_LICENSE.md) for details or contact: [commercial@example.com](mailto:commercial@example.com).
 
 ---
 

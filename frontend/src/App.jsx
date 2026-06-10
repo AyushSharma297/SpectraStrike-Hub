@@ -967,6 +967,15 @@ export default function App() {
                           ))}
                         </div>
                       </div>
+                      {/* Windows Dynamic Lighting specific note */}
+                      {selectedDev.type === 'wdl' && (
+                        <div className="wdl-note" style={{ marginTop: '1rem', padding: '0.75rem', background: 'rgba(255,255,255,0.05)', borderRadius: '8px' }}>
+                          <AlertCircle style={{ width: '1rem', height: '1rem', color: '#fbbf24' }} />
+                          <span style={{ marginLeft: '0.5rem', fontSize: '0.85rem', color: '#fbbf24' }}>
+                            This device is managed via Windows Dynamic Lighting. Changes affect compatible hardware such as keyboards, motherboards, fans, and RAM.
+                          </span>
+                        </div>
+                      )}
 
                       {/* Device Dependent settings */}
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>

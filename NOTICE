@@ -1,0 +1,27 @@
+# SpectraStrike Hub - Third-Party Notices
+
+This project uses the following open-source software and libraries. We acknowledge and thank the developers of these tools:
+
+## FastAPI
+Copyright (c) 2018 Sebastián Ramírez
+License: MIT
+Used for the backend API and orchestration server.
+
+## mss (Multiple Screen Shot)
+Copyright (c) 2013-2023 Mickaël Schoentgen
+License: MIT
+Used for high-speed, low-latency screen capture via OS display APIs.
+
+## openrgb-python
+Copyright (c) 2020 jath03
+License: GPL-3.0 (or equivalent based on upstream)
+Used for TCP communication with OpenRGB servers to control PC peripherals.
+
+## Philips WiZ (Protocol Details)
+The WiZ integration uses standard Python sockets communicating over the publicly known, local UDP JSON-RPC protocol (Port 38899). It does not include any proprietary SDKs, firmware blobs, or reverse-engineered cryptographic material.
+
+## WLED (Protocol Details)
+The WLED integration uses standard HTTP JSON requests and UDP DRGB (Port 21324) based on the public WLED API documentation.
+
+## Windows Dynamic Lighting
+Integrates with the Windows 11 Runtime (WinRT) `LampArray` API. Requires Windows 11 and compatible HID hardware.

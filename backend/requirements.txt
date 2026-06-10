@@ -7,3 +7,5 @@ requests>=2.30.0
 httpx>=0.24.0
 openrgb-python>=0.3.0
 winsdk>=1.0.0b10
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
