@@ -8,14 +8,22 @@ import {
   Cpu,
   Layers,
   Lightbulb,
-  Paintbrush,
   Check,
   AlertCircle,
   Power,
   Sliders,
   Monitor,
   Layout,
-  ChevronDown
+  ChevronDown,
+  Sparkles,
+  Users,
+  Palette,
+  Clock,
+  Activity,
+  Zap,
+  Play,
+  Save,
+  Wand2
 } from 'lucide-react';
 
 const PRESET_EFFECTS = [
@@ -81,16 +89,49 @@ export default function App() {
   const paintDirtyRef = useRef(false);
   const ledColorsRef = useRef([]);
 
+  const [stats, setStats] = useState({ device_count: 0, devices_on: 0, total_leds: 0, type_counts: {}, scene_count: 0, group_count: 0, schedule_count: 0, active_schedules: 0, sync: { active: false, fps_target: 0, fps_actual: 0, frames: 0, device_ids: [] }, uptime_seconds: 0 });
+  const [scenes, setScenes] = useState([]);
+  const [groups, setGroups] = useState([]);
+  const [schedules, setSchedules] = useState([]);
+  const [paletteScheme, setPaletteScheme] = useState('analogous');
+  const [paletteBase, setPaletteBase] = useState('#a855f7');
+  const [paletteResults, setPaletteResults] = useState([]);
+  const [paletteMessage, setPaletteMessage] = useState('');
+
+  const [newSceneName, setNewSceneName] = useState('');
+  const [newGroupName, setNewGroupName] = useState('');
+  const [groupDeviceIds, setGroupDeviceIds] = useState([]);
+  const [expandedGroupId, setExpandedGroupId] = useState(null);
+  const [editingGroupId, setEditingGroupId] = useState(null);
+  const [editingGroupName, setEditingGroupName] = useState('');
+  const [editingGroupDeviceIds, setEditingGroupDeviceIds] = useState([]);
+  const [groupBri, setGroupBri] = useState({});
+  const [groupColor, setGroupColor] = useState({});
+  const [groupFx, setGroupFx] = useState({});
+  const [newScheduleName, setNewScheduleName] = useState('');
+  const [scheduleTime, setScheduleTime] = useState('20:00');
+  const [scheduleDays, setScheduleDays] = useState([0, 1, 2, 3, 4, 5, 6]);
+  const [scheduleAction, setScheduleAction] = useState('on');
+  const [scheduleTarget, setScheduleTarget] = useState('all');
+  const [scheduleSceneId, setScheduleSceneId] = useState('');
+
+  const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
   // Fetch devices periodically
   useEffect(() => {
     fetchDevices();
     fetchSyncStatus();
     fetchLayoutMapping();
     fetchSegmentsMapping();
+    fetchStats();
+    fetchScenes();
+    fetchGroups();
+    fetchSchedules();
 
     const interval = setInterval(() => {
       fetchDevices(true);
       fetchSyncStatus(true);
+      fetchStats(true);
     }, 3000);
 
     return () => clearInterval(interval);
@@ -174,6 +215,300 @@ export default function App() {
       }
     } catch (err) {
       console.error('Failed to fetch segments mapping:', err);
+    }
+  };
+
+  const fetchStats = async (silent = false) => {
+    try {
+      const res = await fetch('/api/stats');
+      if (res.ok) {
+        const data = await res.json();
+        setStats(data);
+      }
+    } catch (err) {
+      if (!silent) console.error('Error fetching stats:', err);
+    }
+  };
+
+  const fetchScenes = async () => {
+    try {
+      const res = await fetch('/api/scenes');
+      if (res.ok) {
+        const data = await res.json();
+        setScenes(data);
+      }
+    } catch (err) {
+      console.error('Error fetching scenes:', err);
+    }
+  };
+
+  const fetchGroups = async () => {
+    try {
+      const res = await fetch('/api/groups');
+      if (res.ok) {
+        const data = await res.json();
+        setGroups(data);
+      }
+    } catch (err) {
+      console.error('Error fetching groups:', err);
+    }
+  };
+
+  const fetchSchedules = async () => {
+    try {
+      const res = await fetch('/api/schedules');
+      if (res.ok) {
+        const data = await res.json();
+        setSchedules(data);
+      }
+    } catch (err) {
+      console.error('Error fetching schedules:', err);
+    }
+  };
+
+  const generatePalette = async () => {
+    try {
+      const baseValue = paletteBase.replace('#', '');
+      const res = await fetch(`/api/palette/generate?base=${encodeURIComponent(baseValue)}&scheme=${encodeURIComponent(paletteScheme)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setPaletteResults(data.colors || []);
+        setPaletteMessage(`Generated ${data.scheme} palette`);
+      } else {
+        setPaletteMessage('Palette generation failed');
+      }
+    } catch (err) {
+      console.error('Palette request failed:', err);
+      setPaletteMessage('Palette service unavailable');
+    }
+  };
+
+  const saveScene = async () => {
+    if (!newSceneName.trim()) {
+      alert('Scene name is required');
+      return;
+    }
+
+    const states = {};
+    devices.forEach(dev => {
+      if (dev.state) {
+        states[dev.id] = {
+          on: dev.state.on,
+          bri: dev.state.bri,
+          color: dev.state.color,
+          fx: dev.state.fx,
+          temp: dev.state.temp
+        };
+      }
+    });
+
+    try {
+      const res = await fetch('/api/scenes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newSceneName, icon: 'sparkles', states })
+      });
+      if (res.ok) {
+        setNewSceneName('');
+        fetchScenes();
+        fetchStats();
+      } else {
+        const err = await res.json();
+        alert(err.detail || 'Unable to save scene');
+      }
+    } catch (err) {
+      console.error('Failed to save scene:', err);
+    }
+  };
+
+  const applyScene = async (sceneId) => {
+    try {
+      const res = await fetch(`/api/scenes/${sceneId}/apply`, { method: 'POST' });
+      if (res.ok) {
+        fetchDevices();
+        fetchStats();
+      }
+    } catch (err) {
+      console.error('Failed to apply scene:', err);
+    }
+  };
+
+  const deleteScene = async (sceneId) => {
+    try {
+      const res = await fetch(`/api/scenes/${sceneId}`, { method: 'DELETE' });
+      if (res.ok) {
+        fetchScenes();
+        fetchStats();
+      }
+    } catch (err) {
+      console.error('Failed to delete scene:', err);
+    }
+  };
+
+  const toggleGroupDevice = (deviceId) => {
+    setGroupDeviceIds(prev => prev.includes(deviceId) ? prev.filter(id => id !== deviceId) : [...prev, deviceId]);
+  };
+
+  const createGroup = async () => {
+    if (!newGroupName.trim()) {
+      alert('Group name is required');
+      return;
+    }
+    try {
+      const res = await fetch('/api/groups', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newGroupName, device_ids: groupDeviceIds })
+      });
+      if (res.ok) {
+        setNewGroupName('');
+        setGroupDeviceIds([]);
+        fetchGroups();
+        fetchStats();
+      } else {
+        const err = await res.json();
+        alert(err.detail || 'Unable to create group');
+      }
+    } catch (err) {
+      console.error('Failed to create group:', err);
+    }
+  };
+
+  const controlGroup = async (groupId, payload) => {
+    try {
+      const res = await fetch(`/api/groups/${groupId}/control`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) {
+        fetchDevices();
+        fetchGroups();
+        fetchStats();
+      }
+    } catch (err) {
+      console.error('Failed to control group:', err);
+    }
+  };
+
+  const deleteGroup = async (groupId) => {
+    try {
+      const res = await fetch(`/api/groups/${groupId}`, { method: 'DELETE' });
+      if (res.ok) {
+        if (expandedGroupId === groupId) setExpandedGroupId(null);
+        fetchGroups();
+        fetchStats();
+      }
+    } catch (err) {
+      console.error('Failed to delete group:', err);
+    }
+  };
+
+  const updateGroup = async (groupId, patch) => {
+    try {
+      const res = await fetch(`/api/groups/${groupId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch)
+      });
+      if (res.ok) {
+        fetchGroups();
+        setEditingGroupId(null);
+      } else {
+        const err = await res.json();
+        alert(err.detail || 'Unable to update group');
+      }
+    } catch (err) {
+      console.error('Failed to update group:', err);
+    }
+  };
+
+  const startEditingGroup = (group) => {
+    setEditingGroupId(group.id);
+    setEditingGroupName(group.name);
+    setEditingGroupDeviceIds([...(group.device_ids || [])]);
+  };
+
+  const toggleEditingDevice = (deviceId) => {
+    setEditingGroupDeviceIds(prev =>
+      prev.includes(deviceId) ? prev.filter(id => id !== deviceId) : [...prev, deviceId]
+    );
+  };
+
+  const allGroupWled = (group) =>
+    (group.device_ids || []).every(id => {
+      const dev = devices.find(d => d.id === id);
+      return dev && dev.type === 'wled';
+    });
+
+  const toggleScheduleDay = (dayIndex) => {
+    setScheduleDays(prev => prev.includes(dayIndex) ? prev.filter(d => d !== dayIndex) : [...prev, dayIndex]);
+  };
+
+  const createSchedule = async () => {
+    if (!newScheduleName.trim() || !scheduleTime) {
+      alert('Schedule name and time are required');
+      return;
+    }
+    if (scheduleAction === 'scene' && !scheduleSceneId) {
+      alert('Please select a scene for the scene action');
+      return;
+    }
+    try {
+      const body = {
+        name: newScheduleName,
+        time: scheduleTime,
+        days: scheduleDays,
+        action: scheduleAction,
+        target: scheduleTarget
+      };
+      if (scheduleAction === 'scene') {
+        body.scene_id = scheduleSceneId;
+      }
+      const res = await fetch('/api/schedules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (res.ok) {
+        setNewScheduleName('');
+        setScheduleTime('20:00');
+        setScheduleDays([0, 1, 2, 3, 4, 5, 6]);
+        setScheduleAction('on');
+        setScheduleTarget('all');
+        setScheduleSceneId('');
+        fetchSchedules();
+        fetchStats();
+      } else {
+        const err = await res.json();
+        alert(err.detail || 'Unable to create schedule');
+      }
+    } catch (err) {
+      console.error('Failed to create schedule:', err);
+    }
+  };
+
+  const toggleSchedule = async (scheduleId) => {
+    try {
+      const res = await fetch(`/api/schedules/${scheduleId}/toggle`, { method: 'POST' });
+      if (res.ok) {
+        fetchSchedules();
+        fetchStats();
+      }
+    } catch (err) {
+      console.error('Failed to toggle schedule:', err);
+    }
+  };
+
+  const deleteSchedule = async (scheduleId) => {
+    try {
+      const res = await fetch(`/api/schedules/${scheduleId}`, { method: 'DELETE' });
+      if (res.ok) {
+        fetchSchedules();
+        fetchStats();
+      }
+    } catch (err) {
+      console.error('Failed to delete schedule:', err);
     }
   };
 
@@ -566,6 +901,44 @@ export default function App() {
         </div>
       </header>
 
+      <div className="stats-strip">
+        <div className="stats-card">
+          <Activity style={{ width: '1.1rem', height: '1.1rem' }} />
+          <div>
+            <span>Controllers Online</span>
+            <strong>{stats.device_count}</strong>
+          </div>
+        </div>
+        <div className="stats-card">
+          <Sun style={{ width: '1.1rem', height: '1.1rem' }} />
+          <div>
+            <span>Power Active</span>
+            <strong>{stats.devices_on}</strong>
+          </div>
+        </div>
+        <div className="stats-card">
+          <Zap style={{ width: '1.1rem', height: '1.1rem' }} />
+          <div>
+            <span>Total LEDs</span>
+            <strong>{stats.total_leds}</strong>
+          </div>
+        </div>
+        <div className="stats-card">
+          <Cpu style={{ width: '1.1rem', height: '1.1rem' }} />
+          <div>
+            <span>Sync FPS</span>
+            <strong>{stats.sync?.fps_actual || 0}</strong>
+          </div>
+        </div>
+        <div className="stats-card">
+          <Clock style={{ width: '1.1rem', height: '1.1rem' }} />
+          <div>
+            <span>Uptime</span>
+            <strong>{Math.floor((stats.uptime_seconds || 0) / 3600)}h</strong>
+          </div>
+        </div>
+      </div>
+
       {/* MANUAL CONTROLLER REGISTRATION */}
       {showAddForm && (
         <div className="add-form-panel">
@@ -853,6 +1226,241 @@ export default function App() {
                 <Tv style={{ width: '1rem', height: '1rem' }} />
                 <span>{syncActive ? 'Stop Sync Stream' : 'Start Sync Stream'}</span>
               </button>
+            </div>
+          </div>
+
+          <div className="glass-card">
+            <div className="card-title-bar">
+              <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <Sparkles style={{ width: '1.1rem', height: '1.1rem', color: '#a855f7' }} />
+                <span>Scenes & Presets</span>
+              </h2>
+              <span className="tag">{scenes.length} Saved</span>
+            </div>
+            <div style={{ display: 'grid', gap: '1rem' }}>
+              <div className="form-row" style={{ alignItems: 'center' }}>
+                <input
+                  type="text"
+                  value={newSceneName}
+                  onChange={(e) => setNewSceneName(e.target.value)}
+                  placeholder="New scene name"
+                  className="input-field"
+                  style={{ flex: 1 }}
+                />
+                <button type="button" onClick={saveScene} className="btn btn-primary" style={{ marginLeft: '0.75rem' }}>
+                  <Save style={{ width: '1rem', height: '1rem' }} />
+                  <span>Save Scene</span>
+                </button>
+              </div>
+              {scenes.length === 0 ? (
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>No scenes saved yet. Capture the current lighting state to build presets.</p>
+              ) : (
+                scenes.map(scene => (
+                  <div key={scene.id} className="scene-row">
+                    <div>
+                      <h4>{scene.name}</h4>
+                      <p>{Object.keys(scene.states || {}).length} devices mapped</p>
+                    </div>
+                    <div className="scene-action-group">
+                      <button onClick={() => applyScene(scene.id)} className="btn btn-icon">
+                        <Play style={{ width: '0.9rem', height: '0.9rem' }} />
+                      </button>
+                      <button onClick={() => deleteScene(scene.id)} className="btn btn-icon" style={{ color: '#f43f5e' }}>
+                        <Trash2 style={{ width: '0.9rem', height: '0.9rem' }} />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="glass-card">
+            <div className="card-title-bar">
+              <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <Users style={{ width: '1.1rem', height: '1.1rem', color: '#06b6d4' }} />
+                <span>Group Control</span>
+              </h2>
+              <span className="tag">{groups.length} Groups</span>
+            </div>
+            <div style={{ display: 'grid', gap: '1rem' }}>
+              {/* Create new group form */}
+              <div style={{ display: 'grid', gap: '0.75rem' }}>
+                <input
+                  type="text"
+                  value={newGroupName}
+                  onChange={(e) => setNewGroupName(e.target.value)}
+                  placeholder="New group name"
+                  className="input-field"
+                />
+                <div className="group-chip-list">
+                  {devices.map(dev => (
+                    <label key={dev.id} className={`group-chip ${groupDeviceIds.includes(dev.id) ? 'active' : ''}`}>
+                      <input type="checkbox" checked={groupDeviceIds.includes(dev.id)} onChange={() => toggleGroupDevice(dev.id)} />
+                      {dev.name}
+                    </label>
+                  ))}
+                </div>
+                <button type="button" onClick={createGroup} className="btn btn-primary">
+                  <Plus style={{ width: '1rem', height: '1rem' }} />
+                  <span>Create Group</span>
+                </button>
+              </div>
+
+              {groups.length === 0 ? (
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>Create a group to control multiple controllers at once.</p>
+              ) : (
+                groups.map(group => {
+                  const isExpanded = expandedGroupId === group.id;
+                  const isEditing = editingGroupId === group.id;
+                  const wledOnly = allGroupWled(group);
+                  const curBri = groupBri[group.id] ?? 128;
+                  const curColor = groupColor[group.id] ?? '#a855f7';
+                  const curFx = groupFx[group.id] ?? 0;
+
+                  return (
+                    <div key={group.id} className="group-panel">
+                      {/* Group header row */}
+                      <div className="group-header-row">
+                        <button
+                          className="group-expand-btn"
+                          onClick={() => setExpandedGroupId(isExpanded ? null : group.id)}
+                        >
+                          <ChevronDown style={{ width: '1rem', height: '1rem', transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
+                        </button>
+                        <div style={{ flex: 1 }}>
+                          {isEditing ? (
+                            <input
+                              className="input-field group-rename-input"
+                              value={editingGroupName}
+                              onChange={(e) => setEditingGroupName(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') updateGroup(group.id, { name: editingGroupName, device_ids: editingGroupDeviceIds });
+                                if (e.key === 'Escape') setEditingGroupId(null);
+                              }}
+                              autoFocus
+                            />
+                          ) : (
+                            <h4 className="group-name" onDoubleClick={() => startEditingGroup(group)}>{group.name}</h4>
+                          )}
+                          <p className="group-meta">{group.device_ids?.length || 0} devices · {wledOnly ? 'WLED' : 'Mixed'}</p>
+                        </div>
+                        <div className="scene-action-group">
+                          <button title="Turn On" onClick={() => controlGroup(group.id, { on: true })} className="btn btn-icon group-on-btn">
+                            <Zap style={{ width: '0.9rem', height: '0.9rem' }} />
+                          </button>
+                          <button title="Turn Off" onClick={() => controlGroup(group.id, { on: false })} className="btn btn-icon">
+                            <Power style={{ width: '0.9rem', height: '0.9rem' }} />
+                          </button>
+                          {isEditing ? (
+                            <button title="Save" onClick={() => updateGroup(group.id, { name: editingGroupName, device_ids: editingGroupDeviceIds })} className="btn btn-icon" style={{ color: '#22c55e' }}>
+                              <Check style={{ width: '0.9rem', height: '0.9rem' }} />
+                            </button>
+                          ) : (
+                            <button title="Edit" onClick={() => startEditingGroup(group)} className="btn btn-icon">
+                              <Sliders style={{ width: '0.9rem', height: '0.9rem' }} />
+                            </button>
+                          )}
+                          <button title="Delete" onClick={() => deleteGroup(group.id)} className="btn btn-icon" style={{ color: '#f43f5e' }}>
+                            <Trash2 style={{ width: '0.9rem', height: '0.9rem' }} />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Expanded controls */}
+                      {isExpanded && (
+                        <div className="group-expanded-body">
+                          {/* Brightness */}
+                          <div className="control-row" style={{ marginBottom: 0 }}>
+                            <div className="control-label-wrapper">
+                              <label>Group Brightness</label>
+                              <span className="control-value-text">{Math.round((curBri / 255) * 100)}%</span>
+                            </div>
+                            <div className="slider-input-wrapper">
+                              <Sun style={{ width: '1rem', height: '1rem' }} />
+                              <input
+                                type="range" min="0" max="255"
+                                value={curBri}
+                                onChange={(e) => setGroupBri(prev => ({ ...prev, [group.id]: parseInt(e.target.value) }))}
+                                onMouseUp={(e) => controlGroup(group.id, { bri: parseInt(e.target.value) })}
+                                onTouchEnd={(e) => controlGroup(group.id, { bri: parseInt(e.target.value) })}
+                                className="slider-range-bar"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Color */}
+                          <div className="control-row" style={{ marginBottom: 0 }}>
+                            <label style={{ fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>Group Color</label>
+                            <div className="color-picker-box">
+                              <input
+                                type="color"
+                                value={curColor}
+                                onChange={(e) => setGroupColor(prev => ({ ...prev, [group.id]: e.target.value }))}
+                                onBlur={(e) => controlGroup(group.id, { color: hexToRgb(e.target.value) })}
+                                className="color-input-circle"
+                              />
+                              <div className="color-picker-details">
+                                <h5>All Devices</h5>
+                                <p>{curColor.toUpperCase()}</p>
+                              </div>
+                            </div>
+                            <div className="quick-colors-palette" style={{ marginTop: '0.5rem' }}>
+                              {['#a855f7','#06b6d4','#ec4899','#f97316','#22c55e','#ef4444','#eab308'].map(hex => (
+                                <button key={hex} onClick={() => { setGroupColor(prev => ({ ...prev, [group.id]: hex })); controlGroup(group.id, { color: hexToRgb(hex) }); }} className="quick-color-dot" style={{ backgroundColor: hex }} />
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Effect — only when all devices are WLED */}
+                          {wledOnly && (
+                            <div className="form-group">
+                              <label>Group Effect</label>
+                              <div style={{ position: 'relative' }}>
+                                <select
+                                  value={curFx}
+                                  onChange={(e) => { const v = parseInt(e.target.value); setGroupFx(prev => ({ ...prev, [group.id]: v })); controlGroup(group.id, { fx: v }); }}
+                                  className="select-dropdown"
+                                  style={{ width: '100%', padding: '0.6rem 0.8rem', paddingRight: '2rem' }}
+                                >
+                                  {PRESET_EFFECTS.map(fx => (
+                                    <option key={fx.id} value={fx.id}>{fx.name}</option>
+                                  ))}
+                                </select>
+                                <ChevronDown style={{ width: '1rem', height: '1rem', position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: '#64748b' }} />
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Edit membership */}
+                          {isEditing && (
+                            <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
+                              <label style={{ fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)', display: 'block', marginBottom: '0.5rem' }}>Edit Members</label>
+                              <div className="group-chip-list">
+                                {devices.map(dev => (
+                                  <label key={dev.id} className={`group-chip ${editingGroupDeviceIds.includes(dev.id) ? 'active' : ''}`}>
+                                    <input type="checkbox" checked={editingGroupDeviceIds.includes(dev.id)} onChange={() => toggleEditingDevice(dev.id)} />
+                                    {dev.name}
+                                  </label>
+                                ))}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => updateGroup(group.id, { name: editingGroupName, device_ids: editingGroupDeviceIds })}
+                                className="btn btn-primary"
+                                style={{ marginTop: '0.75rem', width: '100%' }}
+                              >
+                                <Check style={{ width: '1rem', height: '1rem' }} />
+                                <span>Save Changes</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </section>
@@ -1564,6 +2172,163 @@ export default function App() {
 
             </div>
           )}
+
+          <div className="glass-card">
+            <div className="card-title-bar">
+              <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <Palette style={{ width: '1.1rem', height: '1.1rem', color: '#ec4899' }} />
+                <span>Color Palette Generator</span>
+              </h2>
+              <span className="tag">{paletteResults.length} Colors</span>
+            </div>
+            <div style={{ display: 'grid', gap: '1rem' }}>
+              <div className="form-row" style={{ alignItems: 'center' }}>
+                <input
+                  type="color"
+                  value={paletteBase}
+                  onChange={(e) => setPaletteBase(e.target.value)}
+                  className="color-input-circle"
+                  style={{ width: '2.5rem', height: '2.5rem' }}
+                />
+                <select
+                  value={paletteScheme}
+                  onChange={(e) => setPaletteScheme(e.target.value)}
+                  className="select-dropdown"
+                  style={{ flex: 1 }}
+                >
+                  {['analogous', 'complementary', 'triadic', 'tetradic', 'monochrome'].map(option => (
+                    <option key={option} value={option}>{option.charAt(0).toUpperCase() + option.slice(1)}</option>
+                  ))}
+                </select>
+                <button type="button" onClick={generatePalette} className="btn btn-primary" style={{ marginLeft: '0.75rem' }}>
+                  <Wand2 style={{ width: '1rem', height: '1rem' }} />
+                  <span>Generate</span>
+                </button>
+              </div>
+              <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>{paletteMessage || 'Create a theme from any base color.'}</p>
+              <div className="palette-swatch-grid">
+                {paletteResults.length === 0 ? (
+                  <div className="palette-placeholder">Generate a palette to preview colors here.</div>
+                ) : (
+                  paletteResults.map(color => (
+                    <button
+                      key={color.hex}
+                      onClick={() => setPaletteBase(color.hex)}
+                      className="palette-swatch"
+                      style={{ backgroundColor: color.hex }}
+                    >
+                      <span>{color.hex}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="glass-card">
+            <div className="card-title-bar">
+              <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <Clock style={{ width: '1.1rem', height: '1.1rem', color: '#fcd34d' }} />
+                <span>Schedules & Automation</span>
+              </h2>
+              <span className="tag">{schedules.length} Rules</span>
+            </div>
+            <div style={{ display: 'grid', gap: '1rem' }}>
+              <div className="form-row" style={{ gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <input
+                  type="text"
+                  value={newScheduleName}
+                  onChange={(e) => setNewScheduleName(e.target.value)}
+                  placeholder="Schedule name"
+                  className="input-field"
+                  style={{ flex: '1 1 220px' }}
+                />
+                <input
+                  type="time"
+                  value={scheduleTime}
+                  onChange={(e) => setScheduleTime(e.target.value)}
+                  className="input-field"
+                  style={{ width: '140px' }}
+                />
+                <select
+                  value={scheduleAction}
+                  onChange={(e) => setScheduleAction(e.target.value)}
+                  className="select-dropdown"
+                  style={{ width: '140px' }}
+                >
+                  <option value="on">Turn On</option>
+                  <option value="off">Turn Off</option>
+                  <option value="scene">Apply Scene</option>
+                </select>
+              </div>
+              <div className="form-row" style={{ gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <select
+                  value={scheduleTarget}
+                  onChange={(e) => setScheduleTarget(e.target.value)}
+                  className="select-dropdown"
+                  style={{ flex: '1 1 180px' }}
+                >
+                  <option value="all">All Controllers</option>
+                  {groups.map(group => (
+                    <option key={group.id} value={group.id}>{`Group: ${group.name}`}</option>
+                  ))}
+                  {devices.map(device => (
+                    <option key={device.id} value={device.id}>{`Device: ${device.name}`}</option>
+                  ))}
+                </select>
+                {scheduleAction === 'scene' && (
+                  <select
+                    value={scheduleSceneId}
+                    onChange={(e) => setScheduleSceneId(e.target.value)}
+                    className="select-dropdown"
+                    style={{ flex: '1 1 200px' }}
+                  >
+                    <option value="">Select scene</option>
+                    {scenes.map(scene => (
+                      <option key={scene.id} value={scene.id}>{scene.name}</option>
+                    ))}
+                  </select>
+                )}
+                <button type="button" onClick={createSchedule} className="btn btn-primary" style={{ whiteSpace: 'nowrap' }}>
+                  <Save style={{ width: '1rem', height: '1rem' }} />
+                  <span>Create Rule</span>
+                </button>
+              </div>
+              <div className="schedule-day-row">
+                {WEEKDAY_LABELS.map((label, idx) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => toggleScheduleDay(idx)}
+                    className={`btn ${scheduleDays.includes(idx) ? 'active' : ''}`}
+                    style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem' }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              {schedules.length === 0 ? (
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>No automation rules yet. Create schedules to trigger your lighting scenes automatically.</p>
+              ) : (
+                schedules.map(schedule => (
+                  <div key={schedule.id} className="schedule-row">
+                    <div>
+                      <h4>{schedule.name}</h4>
+                      <p>{schedule.time} • {schedule.days.map(day => WEEKDAY_LABELS[day]).join(', ')} • {schedule.action}{schedule.action === 'scene' ? ` (${scenes.find(scene => scene.id === schedule.scene_id)?.name || 'scene'})` : ''}</p>
+                    </div>
+                    <div className="scene-action-group">
+                      <button onClick={() => toggleSchedule(schedule.id)} className="btn btn-icon">
+                        <Power style={{ width: '0.9rem', height: '0.9rem' }} />
+                      </button>
+                      <button onClick={() => deleteSchedule(schedule.id)} className="btn btn-icon" style={{ color: '#f43f5e' }}>
+                        <Trash2 style={{ width: '0.9rem', height: '0.9rem' }} />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
         </section>
 
       </main>

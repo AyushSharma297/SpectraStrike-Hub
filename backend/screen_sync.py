@@ -18,6 +18,9 @@ class ScreenSyncWorker:
         self.thread = None
         self.stop_event = threading.Event()
         self.monitor_idx = 1
+        self.frame_count = 0
+        self.actual_fps = 0.0
+        self.started_at = None
         
     def start(self, device_ids, layout_mapping=None, segments_mapping=None, mode="average", fps=20, monitor_idx=1):
         """Starts the screen capture and sync thread."""
@@ -32,6 +35,9 @@ class ScreenSyncWorker:
         self.monitor_idx = monitor_idx
         self.stop_event.clear()
         
+        self.frame_count = 0
+        self.actual_fps = 0.0
+        self.started_at = time.time()
         self.running = True
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
@@ -183,6 +189,9 @@ class ScreenSyncWorker:
                     logger.error(f"Error in screen sync capture loop: {e}")
                     
                 elapsed = time.perf_counter() - start_time
+                self.frame_count += 1
+                if elapsed > 0:
+                    self.actual_fps = round(min(1.0 / elapsed, float(self.fps)), 1)
                 sleep_time = delay - elapsed
                 if sleep_time > 0:
                     time.sleep(sleep_time)

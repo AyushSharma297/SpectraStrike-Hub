@@ -1,8 +1,0 @@
-// Copyright (c) 2026 YOUR_NAME
-// 
-// This software is released under the PolyForm Noncommercial License 1.0.0.
-// You may use, modify, and distribute this software for non-commercial purposes.
-// 
-// For commercial use, you must obtain a separate Commercial License.
-// Please see LICENSE.md and COMMERCIAL_LICENSE.md for details, or contact
-// commercial@example.com.

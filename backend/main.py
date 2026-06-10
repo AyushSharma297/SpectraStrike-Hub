@@ -1,11 +1,17 @@
 import os
 import sys
+import json
+import time
+import uuid
+import colorsys
+import threading
 import logging
+from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 
 # Set up paths relative to this file
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -36,6 +42,35 @@ CLIENTS = {}
 LAYOUT = {} # Maps device_id -> "left" | "top" | "right" | "bottom" | "center" | "all"
 SEGMENTS = {} # Maps device_id -> list of dicts [{"start": int, "end": int, "zone": str}, ...]
 CALIBRATION = {} # Maps device_id -> {"r_seen": [R,G,B], "g_seen": [R,G,B], "b_seen": [R,G,B]}
+SCENES = {}     # Maps scene_id -> {"id", "name", "icon", "states": {device_id: state_payload}}
+GROUPS = {}     # Maps group_id -> {"id", "name", "device_ids": [...]}
+SCHEDULES = {}  # Maps schedule_id -> {"id", "name", "time", "days", "action", "enabled", ...}
+SERVER_STARTED_AT = time.time()
+
+# Persistence (scenes / groups / schedules survive restarts)
+DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hub_data.json")
+
+def load_persisted_data():
+    global SCENES, GROUPS, SCHEDULES
+    try:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            SCENES = data.get("scenes", {})
+            GROUPS = data.get("groups", {})
+            SCHEDULES = data.get("schedules", {})
+            logger.info(f"Loaded {len(SCENES)} scenes, {len(GROUPS)} groups, {len(SCHEDULES)} schedules from disk.")
+    except Exception as e:
+        logger.error(f"Failed to load persisted data: {e}")
+
+def save_persisted_data():
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump({"scenes": SCENES, "groups": GROUPS, "schedules": SCHEDULES}, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save persisted data: {e}")
+
+load_persisted_data()
 
 def get_client(device_id: str):
     """Retrieves or creates a cached client instance for WLED, WiZ, or OpenRGB."""
@@ -147,6 +182,28 @@ class CalibrationRequest(BaseModel):
     max_g: int = 255
     max_b: int = 255
     temp: int = 6500
+
+class SceneRequest(BaseModel):
+    name: str
+    icon: Optional[str] = "sparkles"
+    states: Dict[str, Dict[str, Any]]  # {device_id: {"on":..,"bri":..,"color":..,"fx":..,"temp":..}}
+
+class GroupRequest(BaseModel):
+    name: str
+    device_ids: List[str]
+
+class GroupUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    device_ids: Optional[List[str]] = None
+
+class ScheduleRequest(BaseModel):
+    name: str
+    time: str                          # "HH:MM" 24h format
+    days: List[int] = [0, 1, 2, 3, 4, 5, 6]  # 0=Monday ... 6=Sunday
+    action: str                        # "on" | "off" | "scene"
+    target: Optional[str] = "all"      # device_id, group_id, or "all" (for on/off)
+    scene_id: Optional[str] = None     # required when action == "scene"
+    enabled: bool = True
 
 def get_temp_multipliers(k):
     """Computes fast linear warm/cool multipliers relative to D65 (6500K)."""
@@ -469,6 +526,338 @@ async def get_screen_sync_status():
         "fps": sync_worker.fps,
         "monitor_idx": sync_worker.monitor_idx,
         "segments_mapping": sync_worker.segments_mapping
+    }
+
+# ----------------------------------------------------------------------------
+# Helpers for scenes / groups / schedules
+# ----------------------------------------------------------------------------
+
+def apply_control_payload(device_id: str, payload: dict):
+    """Applies a control-style payload {on, bri, color, fx, sx, ix, temp} to one device."""
+    client = get_client(device_id)
+    if not client:
+        return False
+    try:
+        if payload.get("on") is not None:
+            if payload["on"]:
+                client.turn_on()
+            else:
+                client.turn_off()
+        if payload.get("bri") is not None:
+            client.set_brightness(int(payload["bri"]))
+        color = payload.get("color")
+        if color is not None and len(color) == 3:
+            client.set_color(int(color[0]), int(color[1]), int(color[2]))
+        dev_type = DEVICES.get(device_id, {}).get("type")
+        if dev_type == "wled" and payload.get("fx") is not None:
+            speed = payload.get("sx", 128) or 128
+            intensity = payload.get("ix", 128) or 128
+            client.set_effect(int(payload["fx"]), int(speed), int(intensity))
+        if dev_type == "wiz" and payload.get("temp") is not None:
+            client.set_temp(int(payload["temp"]))
+        return True
+    except Exception as e:
+        logger.error(f"Failed applying payload to {device_id}: {e}")
+        return False
+
+def apply_scene_by_id(scene_id: str):
+    """Applies all device states stored in a scene. Returns count applied."""
+    scene = SCENES.get(scene_id)
+    if not scene:
+        return 0
+    applied = 0
+    for dev_id, state in scene.get("states", {}).items():
+        if dev_id in DEVICES and apply_control_payload(dev_id, state):
+            applied += 1
+    return applied
+
+# ----------------------------------------------------------------------------
+# Scenes API
+# ----------------------------------------------------------------------------
+
+@app.get("/api/scenes")
+async def list_scenes():
+    """Lists all saved scenes."""
+    return list(SCENES.values())
+
+@app.post("/api/scenes")
+async def create_scene(req: SceneRequest):
+    """Saves a snapshot of device states as a named scene."""
+    if not req.name.strip():
+        raise HTTPException(status_code=400, detail="Scene name is required")
+    scene_id = f"scene_{uuid.uuid4().hex[:8]}"
+    SCENES[scene_id] = {
+        "id": scene_id,
+        "name": req.name.strip(),
+        "icon": req.icon or "sparkles",
+        "states": req.states,
+        "created_at": datetime.now().isoformat(timespec="seconds")
+    }
+    save_persisted_data()
+    return SCENES[scene_id]
+
+@app.post("/api/scenes/{scene_id}/apply")
+async def apply_scene(scene_id: str):
+    """Recalls a saved scene across all its devices."""
+    if scene_id not in SCENES:
+        raise HTTPException(status_code=404, detail="Scene not found")
+    applied = apply_scene_by_id(scene_id)
+    return {"status": "success", "applied_devices": applied}
+
+@app.delete("/api/scenes/{scene_id}")
+async def delete_scene(scene_id: str):
+    """Deletes a saved scene."""
+    if scene_id not in SCENES:
+        raise HTTPException(status_code=404, detail="Scene not found")
+    del SCENES[scene_id]
+    save_persisted_data()
+    return {"status": "deleted"}
+
+# ----------------------------------------------------------------------------
+# Groups API
+# ----------------------------------------------------------------------------
+
+@app.get("/api/groups")
+async def list_groups():
+    """Lists all device groups."""
+    return list(GROUPS.values())
+
+@app.post("/api/groups")
+async def create_group(req: GroupRequest):
+    """Creates a named group of devices for unified control."""
+    if not req.name.strip():
+        raise HTTPException(status_code=400, detail="Group name is required")
+    if not req.device_ids:
+        raise HTTPException(status_code=400, detail="Group needs at least one device")
+    group_id = f"group_{uuid.uuid4().hex[:8]}"
+    GROUPS[group_id] = {
+        "id": group_id,
+        "name": req.name.strip(),
+        "device_ids": req.device_ids
+    }
+    save_persisted_data()
+    return GROUPS[group_id]
+
+@app.patch("/api/groups/{group_id}")
+async def update_group(group_id: str, req: GroupUpdateRequest):
+    """Renames a group and/or updates its device membership."""
+    group = GROUPS.get(group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    if req.name is not None:
+        if not req.name.strip():
+            raise HTTPException(status_code=400, detail="Group name cannot be empty")
+        group["name"] = req.name.strip()
+    if req.device_ids is not None:
+        if len(req.device_ids) == 0:
+            raise HTTPException(status_code=400, detail="Group needs at least one device")
+        group["device_ids"] = req.device_ids
+    save_persisted_data()
+    return group
+
+@app.post("/api/groups/{group_id}/control")
+async def control_group(group_id: str, req: ControlRequest):
+    """Applies a control payload to every device in a group."""
+    group = GROUPS.get(group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    payload = req.model_dump(exclude_none=True)
+    applied = 0
+    for dev_id in group["device_ids"]:
+        if dev_id in DEVICES and apply_control_payload(dev_id, payload):
+            applied += 1
+    return {"status": "success", "applied_devices": applied}
+
+@app.delete("/api/groups/{group_id}")
+async def delete_group(group_id: str):
+    """Deletes a device group."""
+    if group_id not in GROUPS:
+        raise HTTPException(status_code=404, detail="Group not found")
+    del GROUPS[group_id]
+    save_persisted_data()
+    return {"status": "deleted"}
+
+# ----------------------------------------------------------------------------
+# Color Palette Generator API
+# ----------------------------------------------------------------------------
+
+@app.get("/api/palette/generate")
+async def generate_palette(base: str = "a855f7", scheme: str = "analogous"):
+    """Generates a color-harmony palette from a base hex color.
+    Schemes: complementary, analogous, triadic, tetradic, monochrome."""
+    base = base.lstrip("#")
+    if len(base) != 6:
+        raise HTTPException(status_code=400, detail="Base color must be a 6-digit hex")
+    try:
+        r, g, b = (int(base[i:i+2], 16) / 255.0 for i in (0, 2, 4))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid hex color")
+
+    h, s, v = colorsys.rgb_to_hsv(r, g, b)
+    s = max(s, 0.45)  # keep palettes vivid
+    v = max(v, 0.55)
+
+    hue_offsets = {
+        "complementary": [0.0, 0.5, 0.08, 0.58, 0.92],
+        "analogous":     [0.0, 0.066, 0.133, -0.066, -0.133],
+        "triadic":       [0.0, 1/3, 2/3, 0.05, 0.38],
+        "tetradic":      [0.0, 0.25, 0.5, 0.75, 0.05],
+        "monochrome":    [0.0, 0.0, 0.0, 0.0, 0.0],
+    }
+    if scheme not in hue_offsets:
+        raise HTTPException(status_code=400, detail=f"Unknown scheme. Use one of: {', '.join(hue_offsets)}")
+
+    colors = []
+    for i, off in enumerate(hue_offsets[scheme]):
+        nh = (h + off) % 1.0
+        if scheme == "monochrome":
+            nv = max(0.15, min(1.0, v - 0.18 * i + 0.18))
+            ns = max(0.1, min(1.0, s - 0.1 * i + 0.1))
+        else:
+            nv = v
+            ns = s
+        nr, ng, nb = colorsys.hsv_to_rgb(nh, ns, nv)
+        rgb = [int(nr * 255), int(ng * 255), int(nb * 255)]
+        colors.append({
+            "hex": "#{:02x}{:02x}{:02x}".format(*rgb),
+            "rgb": rgb
+        })
+    return {"scheme": scheme, "base": f"#{base}", "colors": colors}
+
+# ----------------------------------------------------------------------------
+# Schedules API + background scheduler
+# ----------------------------------------------------------------------------
+
+@app.get("/api/schedules")
+async def list_schedules():
+    """Lists all automation schedules."""
+    return list(SCHEDULES.values())
+
+@app.post("/api/schedules")
+async def create_schedule(req: ScheduleRequest):
+    """Creates a time-based automation (turn on/off devices or apply a scene)."""
+    if not req.name.strip():
+        raise HTTPException(status_code=400, detail="Schedule name is required")
+    try:
+        datetime.strptime(req.time, "%H:%M")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Time must be in HH:MM 24h format")
+    if req.action not in ("on", "off", "scene"):
+        raise HTTPException(status_code=400, detail="Action must be 'on', 'off', or 'scene'")
+    if req.action == "scene" and req.scene_id not in SCENES:
+        raise HTTPException(status_code=400, detail="Valid scene_id required for scene action")
+    schedule_id = f"sched_{uuid.uuid4().hex[:8]}"
+    SCHEDULES[schedule_id] = {
+        "id": schedule_id,
+        "name": req.name.strip(),
+        "time": req.time,
+        "days": req.days,
+        "action": req.action,
+        "target": req.target or "all",
+        "scene_id": req.scene_id,
+        "enabled": req.enabled,
+        "last_run": None
+    }
+    save_persisted_data()
+    return SCHEDULES[schedule_id]
+
+@app.post("/api/schedules/{schedule_id}/toggle")
+async def toggle_schedule(schedule_id: str):
+    """Enables/disables a schedule."""
+    if schedule_id not in SCHEDULES:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    SCHEDULES[schedule_id]["enabled"] = not SCHEDULES[schedule_id]["enabled"]
+    save_persisted_data()
+    return SCHEDULES[schedule_id]
+
+@app.delete("/api/schedules/{schedule_id}")
+async def delete_schedule(schedule_id: str):
+    """Deletes a schedule."""
+    if schedule_id not in SCHEDULES:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    del SCHEDULES[schedule_id]
+    save_persisted_data()
+    return {"status": "deleted"}
+
+def _resolve_schedule_targets(target: str):
+    """Resolves a schedule target ('all', group_id, or device_id) to device IDs."""
+    if target == "all" or not target:
+        return list(DEVICES.keys())
+    if target in GROUPS:
+        return [d for d in GROUPS[target]["device_ids"] if d in DEVICES]
+    if target in DEVICES:
+        return [target]
+    return []
+
+def _scheduler_loop():
+    """Background loop: fires enabled schedules at their HH:MM on matching weekdays."""
+    while True:
+        try:
+            now = datetime.now()
+            current_hhmm = now.strftime("%H:%M")
+            today_key = now.strftime("%Y-%m-%d")
+            weekday = now.weekday()
+            for sched in list(SCHEDULES.values()):
+                if not sched.get("enabled"):
+                    continue
+                if sched.get("time") != current_hhmm or weekday not in sched.get("days", []):
+                    continue
+                run_key = f"{today_key} {current_hhmm}"
+                if sched.get("last_run") == run_key:
+                    continue
+                sched["last_run"] = run_key
+                logger.info(f"Schedule '{sched['name']}' firing (action={sched['action']})")
+                if sched["action"] == "scene" and sched.get("scene_id"):
+                    apply_scene_by_id(sched["scene_id"])
+                else:
+                    payload = {"on": sched["action"] == "on"}
+                    for dev_id in _resolve_schedule_targets(sched.get("target", "all")):
+                        apply_control_payload(dev_id, payload)
+                save_persisted_data()
+        except Exception as e:
+            logger.error(f"Scheduler loop error: {e}")
+        time.sleep(20)
+
+scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True)
+scheduler_thread.start()
+
+# ----------------------------------------------------------------------------
+# Live Stats API
+# ----------------------------------------------------------------------------
+
+@app.get("/api/stats")
+async def get_stats():
+    """Returns live dashboard statistics."""
+    devices_on = 0
+    total_leds = 0
+    type_counts = {}
+    for dev_id, dev in DEVICES.items():
+        type_counts[dev["type"]] = type_counts.get(dev["type"], 0) + 1
+        total_leds += dev.get("led_count") or 0
+        client = CLIENTS.get(dev_id)
+        if client:
+            try:
+                if client.get_state().get("on"):
+                    devices_on += 1
+            except Exception:
+                pass
+    return {
+        "device_count": len(DEVICES),
+        "devices_on": devices_on,
+        "total_leds": total_leds,
+        "type_counts": type_counts,
+        "scene_count": len(SCENES),
+        "group_count": len(GROUPS),
+        "schedule_count": len(SCHEDULES),
+        "active_schedules": sum(1 for s in SCHEDULES.values() if s.get("enabled")),
+        "sync": {
+            "active": sync_worker.running,
+            "fps_target": sync_worker.fps,
+            "fps_actual": getattr(sync_worker, "actual_fps", 0.0),
+            "frames": getattr(sync_worker, "frame_count", 0),
+            "device_ids": sync_worker.active_device_ids if sync_worker.running else []
+        },
+        "uptime_seconds": int(time.time() - SERVER_STARTED_AT)
     }
 
 # Mount static files.

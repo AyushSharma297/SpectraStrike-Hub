@@ -111,28 +111,31 @@ async def scan_wiz_broadcast(subnets=None, timeout=3.0):
     
     def _blocking_scan():
         """Runs blocking UDP discovery in a thread so asyncio is not blocked."""
-        # Create two sockets: one for sending, one for receiving broadcasts
-        send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        send_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        
-        # Receive socket: bind to the broadcast port to listen for responses
-        recv_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        recv_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        recv_sock.settimeout(0.5)  # Short timeout per recv attempt
-        
-        # Try to bind to port 38899 on all interfaces to receive responses
+        # IMPORTANT: WiZ bulbs reply to the SOURCE port of the request packet.
+        # We must therefore send AND receive on the SAME socket, otherwise the
+        # bulbs' responses go to an ephemeral send port that nobody is reading
+        # and the scan always comes up empty. (This mirrors wiz.py's client,
+        # which sends and receives on one socket.)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.settimeout(0.5)  # Short timeout per recv attempt
+
+        # Bind to port 38899 so responses land on the same socket we send from.
+        # If the port is busy, fall back to an ephemeral port — discovery still
+        # works because bulbs reply to whatever source port we sent from.
         try:
-            recv_sock.bind(("0.0.0.0", 38899))
-            logger.debug("Bound to port 38899 for WiZ discovery responses")
+            sock.bind(("0.0.0.0", 38899))
+            logger.debug("Bound to port 38899 for WiZ discovery")
         except OSError as e:
-            # Port might be in use, bind to any available port instead
-            logger.debug(f"Could not bind to port 38899 (may be in use): {e}, using any port instead")
+            logger.debug(f"Could not bind to port 38899 (may be in use): {e}, using ephemeral port instead")
             try:
-                recv_sock.bind(("0.0.0.0", 0))
+                sock.bind(("0.0.0.0", 0))
             except Exception as e2:
-                logger.warning(f"Could not bind WiZ discovery receive socket: {e2}")
+                logger.warning(f"Could not bind WiZ discovery socket: {e2}")
+
+        send_sock = sock
+        recv_sock = sock
         
         # Try multiple WiZ discovery methods to maximize detection
         discovery_methods = [

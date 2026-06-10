@@ -1,12 +1,110 @@
 # SpectraStrike Hub - Enterprise Unified Gaming & Ambient Sync Control Plane
 
+> **A futuristic, glassmorphic smart lighting hub for unified control of WLED, WiZ, OpenRGB, and Windows Dynamic Lighting devices with real-time screen synchronization.**
+
 SpectraStrike Hub is a unified, high-performance, and low-latency smart lighting control hub and synchronization service. It aggregates diverse local IoT protocols—**WLED controllers (HTTP/UDP)**, **Philips WiZ bulbs (UDP JSON-RPC)**, **OpenRGB SDK servers (TCP)**, and **Windows Dynamic Lighting (UWP WinRT LampArray)**—into a single, responsive control plane optimized for immersive gaming environments.
 
 Designed for real-time applications, SpectraStrike Hub includes a **SignalRGB-style pixel painting grid** for granular lightstrip control, an **interactive screen ambient sync (Ambilight) mapping canvas** supporting HTML5 drag-and-drop assigning, **Multi-Zone LED Segment Sync**, **TrueColor Manual Channel Calibration**, and a fully-compliant **Model Context Protocol (MCP) server** for AI agent orchestration.
 
 ---
 
-## 1. System Architecture & Data Flow
+## 📋 Table of Contents
+
+- [Quick Start](#quick-start)
+- [Features](#features)
+- [System Architecture](#system-architecture--data-flow)
+- [Technical Deep-Dives](#technical-deep-dives)
+- [API Reference](#api-endpoint-reference)
+- [Project Structure](#project-directory-structure)
+- [Troubleshooting](#troubleshooting)
+- [Contributing](#contributing)
+- [Security](#security)
+- [License](#license)
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- **Python 3.9+** (Windows/macOS/Linux)
+- **Node.js 18+** and **npm 9+**
+- **Git**
+- Smart lighting devices: WLED, WiZ, OpenRGB, or Windows Dynamic Lighting
+
+### Installation & Running (5 minutes)
+
+**1. Clone & Setup Backend:**
+```bash
+git clone https://github.com/AyushSharma297/SpectraStrike-Hub.git
+cd SpectraStrike-Hub/backend
+pip install -r requirements.txt
+python main.py
+```
+Backend runs on `http://localhost:8000` (FastAPI with auto-docs at `/docs`)
+
+**2. Setup Frontend (new terminal):**
+```bash
+cd frontend
+npm install
+npm run dev
+```
+Frontend runs on `http://localhost:5173`
+
+**3. Start using:**
+- Open your browser to `http://localhost:5173`
+- Click **"Scan Devices"** to auto-discover local lighting controllers
+- Control brightness, colors, effects, and screen sync from the dashboard
+
+### Demo Features
+
+Once running, try these:
+- **Color Palette Generator**: Create harmonious 5-color schemes with 6 harmony modes
+- **Scenes**: Snapshot and restore device states instantly
+- **Groups**: Organize devices and control them together
+- **Schedules**: Set daily automation rules
+- **Live Stats**: Monitor device count, LED total, sync FPS, uptime
+
+**GitHub Repository**: [github.com/AyushSharma297/SpectraStrike-Hub](https://github.com/AyushSharma297/SpectraStrike-Hub)
+
+---
+
+## Features
+
+SpectraStrike Hub includes these production-ready features:
+
+### Core Control
+- ✅ **Multi-Protocol Support**: WLED, WiZ, OpenRGB, Windows Dynamic Lighting
+- ✅ **Device Auto-Discovery**: Fast local subnet scanning with validation
+- ✅ **Real-Time Control**: Instant power, brightness, color, and effect changes
+- ✅ **Group Management**: Create device groups with rename, color, brightness, effect control
+- ✅ **Scenes & Presets**: Capture and apply device state snapshots
+
+### Advanced Sync & Ambient
+- ✅ **Screen Ambient Sync (Ambilight)**: Real-time edge/zone color mapping from screen capture
+- ✅ **Multi-Zone Segments**: Split lightstrips into independent screen regions
+- ✅ **Interactive Canvas Mapping**: Drag-and-drop coordinate zone assignment
+- ✅ **Bilinear Downsampling**: Hardware-optimized color averaging
+
+### Color & Calibration
+- ✅ **TrueColor Manual Calibration**: 3x3 matrix correction for hardware color tints
+- ✅ **Color Picker with Presets**: Quick access to common colors
+- ✅ **Palette Generator**: 6 color harmony schemes (Complementary, Triad, etc.)
+- ✅ **Live Paint Brush**: Pixel-level LED control with 75ms network throttle
+
+### Automation & Integration
+- ✅ **Schedules & Automation**: Daily rules with day-of-week + time + action targeting
+- ✅ **Model Context Protocol (MCP)**: AI-ready integration (Claude, Gemini, Cursor)
+- ✅ **FastAPI REST API**: Full endpoint coverage with auto-generated docs
+
+### UI/UX
+- ✅ **Glassmorphic Design**: Modern frosted-glass aesthetic with animations
+- ✅ **Real-Time Dashboard**: Live stats (device count, LEDs, sync FPS, uptime)
+- ✅ **Responsive Layouts**: Works on desktop and mobile
+
+---
+
+## System Architecture & Data Flow
 
 SpectraStrike Hub separates concerns between a reactive SPA frontend, a multithreaded FastAPI orchestrator, and low-latency network adapters.
 
@@ -317,15 +415,18 @@ Controls the screen ambient sync thread worker.
 
 ---
 
-## 7. Git Project Directory Structure
+## 7. Project Directory Structure
 
 The repository follows a clean monorepo structure separating the Python ASGI backend from the Vite React SPA frontend:
 
 ```text
 wled-wiz-hub/
 ├── .gitignore              # Root-level Git ignore configuration
-├── LICENSE                 # License terms (Personal & Non-Commercial) and Attributions
-├── README.md               # Unified documentation guide
+├── LICENSE                 # Apache 2.0 License
+├── README.md               # This documentation
+├── CONTRIBUTING.md         # Contributing guidelines and dev setup
+├── SECURITY.md             # Security policy and vulnerability disclosure
+├── CODE_OF_CONDUCT.md      # Community standards and behavior expectations
 ├── run.bat                 # Windows orchestrator startup utility script
 ├── backend/                # FastAPI Application Backend
 │   ├── main.py             # FastAPI App, router, device cache setup
@@ -345,34 +446,111 @@ wled-wiz-hub/
     ├── public/             # Static vectors and icons
     └── src/                # Frontend codebase
         ├── main.jsx        # App component mounter
-        ├── App.jsx         # Dashboard SPA client UI code
-        ├── App.css         # Styling overrides
-        └── index.css       # Core gamer glassmorphism design system
+        ├── App.jsx         # Dashboard SPA client UI code (2700+ lines)
+        ├── index.css       # Core gamer glassmorphism design system (1000+ lines)
+        └── assets/         # Component icons
 ```
 
 ---
 
-## 8. Licensing & Commercial Use
+## Troubleshooting
 
-### 8.1 Ownership & Copyright
-SpectraStrike Hub is authored and owned exclusively by **YOUR_NAME**. Copyright (c) 2026 YOUR_NAME. All rights reserved.
+### Backend won't start
+- **Error**: `ModuleNotFoundError: No module named 'fastapi'`
+  - **Solution**: Run `pip install -r requirements.txt` in the `backend/` folder
+- **Error**: `Port 8000 already in use`
+  - **Solution**: Change the port in `main.py` or kill the process using port 8000
 
-### 8.2 Non-Commercial License (PolyForm Noncommercial 1.0.0)
-This repository is released under the **PolyForm Noncommercial License 1.0.0**.
-* **Allowed**: You are encouraged to view, learn from, fork, modify, and use this software for your own personal, hobbyist, educational, or research purposes.
-* **Prohibited**: You **cannot** use this software for any commercial purposes (e.g., in paid products, retail environments, professional monetized setups, or internal operations of a for-profit business) under this license.
+### Devices not appearing in scan
+- **Check**: Devices must be on the same local network (WiFi/Ethernet)
+- **Check**: Firewall may be blocking UDP ports 38899 (WiZ) or 21324 (WLED)
+- **Try**: Manual device add via `POST /api/devices/add` with device IP
 
-Please read the full terms in the [`LICENSE.md`](LICENSE.md) file.
+### Screen sync not working
+- **Windows**: Ensure "Background Light Control" is enabled in Settings → Personalization → Dynamic Lighting
+- **MSS library**: Make sure `mss` library installed: `pip install mss`
+- **Check**: Verify devices support screen sync (WLED, OpenRGB support this; WiZ bulbs use color averaging)
 
-### 8.3 Commercial Licensing
-If you wish to use SpectraStrike Hub for a commercial purpose, you must obtain a commercial license. 
-Please see [`COMMERCIAL_LICENSE.md`](COMMERCIAL_LICENSE.md) for details or contact: [commercial@example.com](mailto:commercial@example.com).
+### Frontend build warnings
+- **Solution**: Run `npm run build` to identify issues. The build should complete with zero errors/warnings
+
+### Color not matching expected
+- **Solution**: Use **TrueColor Manual Calibration**:
+  1. Set device to pure Red [255,0,0], Green [0,255,0], Blue [0,0,255]
+  2. Note the perceived colors visually
+  3. Use the calibration endpoint to correct the color matrix
 
 ---
 
-## 9. Legal & Compliance: WiZ Socket Integration
+## Contributing
 
-The WiZ light control engine in SpectraStrike Hub ([wiz.py](file:///C:/Users/aayus/.gemini/antigravity-ide/scratch/wled-wiz-hub/backend/wiz.py)) is implemented using low-level sockets communicating via open local JSON-RPC protocol over UDP (Port 38899). 
-* **Zero Proprietary SDKs**: Communication utilizes only built-in standard Python sockets.
-* **No Reverse-Engineering**: The command schema uses publicly documented local JSON-RPC methods (`getPilot`, `setPilot`) exposed natively by the bulb's firmware.
-* **Fully Legal & Compliant**: No encrypted keys, proprietary binaries, or firmware blobs are stored, extracted, or distributed within this repository, ensuring maximum legal compliance for local network device automation.
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
+- Development setup instructions
+- Code style guidelines
+- Pull request process
+- Feature development checklist
+
+**Quick PR Checklist:**
+- [ ] Fork the repository
+- [ ] Create a feature branch: `git checkout -b feature/your-feature`
+- [ ] Make changes and test locally
+- [ ] Verify: `npm run build` (zero warnings) and backend starts correctly
+- [ ] Commit with conventional message: `feat: your feature description`
+- [ ] Push and open a pull request
+
+---
+
+## Security
+
+To report security vulnerabilities, please see [SECURITY.md](SECURITY.md).
+
+**Do not** create public issues for security problems. Instead:
+- Email the maintainers with vulnerability details
+- Allow time for a patch before public disclosure
+- Follow the 90-day responsible disclosure window
+
+---
+
+## License
+
+SpectraStrike Hub is released under the **Apache License 2.0**.
+
+You are free to:
+- ✅ Use this software for any purpose (commercial or personal)
+- ✅ Modify and distribute the code
+- ✅ Include it in your projects
+
+You must:
+- 📋 Include the original license and copyright notice
+- 📋 Disclose any modifications made
+- ⚠️ Provide a copy of the Apache 2.0 license with distributions
+
+See [LICENSE](LICENSE) for full terms.
+
+**Copyright © 2026 SpectraStrike Hub Contributors**
+
+---
+
+## Technical Compliance Notes
+
+### WiZ Socket Integration
+The WiZ light control engine in SpectraStrike Hub ([backend/wiz.py](backend/wiz.py)) is implemented using low-level sockets communicating via the open local JSON-RPC protocol over UDP Port 38899. 
+- **Zero Proprietary SDKs**: Uses only built-in Python sockets
+- **No Reverse-Engineering**: Uses publicly documented JSON-RPC methods (`getPilot`, `setPilot`)
+- **Fully Legal**: No encrypted keys, proprietary binaries, or firmware blobs stored
+
+### Stack
+- **Backend**: Python 3.9+ with FastAPI, Uvicorn
+- **Frontend**: React 19 with Vite, Lucide icons, custom glassmorphic CSS
+- **Styling**: 1000+ lines of modern glassmorphism with animations
+- **Protocols**: WLED (HTTP/UDP), WiZ (UDP JSON-RPC), OpenRGB (TCP), Windows Dynamic Lighting (WinRT)
+
+---
+
+## Support & Questions
+
+- 📖 **Documentation**: See [CONTRIBUTING.md](CONTRIBUTING.md) for dev guides
+- 🐛 **Bug Reports**: [Open an issue](https://github.com/AyushSharma297/SpectraStrike-Hub/issues) with reproduction steps
+- 💡 **Feature Requests**: [Open an issue](https://github.com/AyushSharma297/SpectraStrike-Hub/issues) describing the use case
+- 💬 **Discussions**: [GitHub Discussions](https://github.com/AyushSharma297/SpectraStrike-Hub/discussions) for general questions
+- 📧 **Email**: ayushsh762@gmail.com
