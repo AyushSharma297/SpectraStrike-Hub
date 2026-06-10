@@ -1,4 +1,5 @@
 import logging
+import time
 
 logger = logging.getLogger("pc_lights")
 
@@ -19,6 +20,7 @@ class OpenRGBPCClient:
         self.client = None
         self.devices = []
         self.calibration_matrix = None
+        self.last_connect_attempt = 0.0
         self.state = {
             "on": True,
             "bri": 128,
@@ -29,13 +31,22 @@ class OpenRGBPCClient:
             self._connect()
             
     def _connect(self):
+        if self.is_mock:
+            return
+            
+        now = time.time()
+        if now - getattr(self, 'last_connect_attempt', 0.0) < 10.0:
+            return  # 10 seconds cooldown to avoid freezing the sync thread
+        self.last_connect_attempt = now
+        
         try:
             self.client = OpenRGBClient(self.ip, self.port)
             self.devices = self.client.devices
             logger.info(f"Connected to OpenRGB server. Discovered {len(self.devices)} PC lighting devices.")
         except Exception as e:
-            logger.warning(f"Could not connect to OpenRGB server at {self.ip}:{self.port}: {e}. Falling back to mock mode.")
-            self.is_mock = True
+            logger.warning(f"Could not connect to OpenRGB server at {self.ip}:{self.port}: {e}. Will retry connection on state updates.")
+            self.client = None
+            self.devices = []
 
     def set_calibration(self, matrix, gamma=2.2, min_r=0, min_g=0, min_b=0, max_r=255, max_g=255, max_b=255, temp_mults=None):
         self.calibration_matrix = matrix

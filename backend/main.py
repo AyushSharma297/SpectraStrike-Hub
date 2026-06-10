@@ -31,7 +31,22 @@ app.add_middleware(
 )
 
 # Global stores
-DEVICES = {}
+DEVICES = {
+    "openrgb_pc": {
+        "id": "openrgb_pc",
+        "ip": "127.0.0.1",
+        "type": "openrgb",
+        "name": "PC Internal Lights (OpenRGB)",
+        "is_mock": False
+    },
+    "windows_dynamic_lighting": {
+        "id": "windows_dynamic_lighting",
+        "ip": "127.0.0.1",
+        "type": "wdl",
+        "name": "Windows Dynamic Lighting (PC)",
+        "is_mock": False
+    }
+}
 CLIENTS = {}
 LAYOUT = {} # Maps device_id -> "left" | "top" | "right" | "bottom" | "center" | "all"
 SEGMENTS = {} # Maps device_id -> list of dicts [{"start": int, "end": int, "zone": str}, ...]
