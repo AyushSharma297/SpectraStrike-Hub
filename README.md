@@ -314,3 +314,60 @@ Retrieves all registered segment mappings.
 
 ### 6.11 `POST /api/sync/screen`
 Controls the screen ambient sync thread worker.
+
+---
+
+## 7. Git Project Directory Structure
+
+The repository follows a clean monorepo structure separating the Python ASGI backend from the Vite React SPA frontend:
+
+```text
+wled-wiz-hub/
+├── .gitignore              # Root-level Git ignore configuration
+├── LICENSE                 # License terms (Personal & Non-Commercial) and Attributions
+├── README.md               # Unified documentation guide
+├── run.bat                 # Windows orchestrator startup utility script
+├── backend/                # FastAPI Application Backend
+│   ├── main.py             # FastAPI App, router, device cache setup
+│   ├── mcp_server.py       # Model Context Protocol (MCP) server endpoints
+│   ├── scanner.py          # Multicast SSDP device finder (UDP & TCP ports)
+│   ├── screen_sync.py      # Background capture thread and buffer processor
+│   ├── wled.py             # WLED Client wrapper (HTTP JSON & UDP DRGB)
+│   ├── wiz.py              # WiZ Client wrapper (Raw socket UDP JSON-RPC)
+│   ├── pc_lights.py        # OpenRGB TCP SDK connection library
+│   ├── windows_dynamic_lighting.py # Windows Dynamic Lighting client (WinRT integration)
+│   └── requirements.txt    # Python backend module list
+└── frontend/               # Vite React Dashboard App
+    ├── package.json        # Node configuration and script runners
+    ├── vite.config.js      # Vite build configurations
+    ├── eslint.config.js    # Code styling validation rules
+    ├── index.html          # Web entry point index file
+    ├── public/             # Static vectors and icons
+    └── src/                # Frontend codebase
+        ├── main.jsx        # App component mounter
+        ├── App.jsx         # Dashboard SPA client UI code
+        ├── App.css         # Styling overrides
+        └── index.css       # Core gamer glassmorphism design system
+```
+
+---
+
+## 8. Licensing, Ownership & Non-Commercial Terms
+
+### 8.1 Ownership & Copyright
+SpectraStrike Hub is authored and owned exclusively by **Aayush**. Copyright (c) 2026 Aayush. All rights reserved.
+
+### 8.2 Non-Commercial Restriction
+This project is licensed under a **Custom Personal and Non-Commercial License**. Under these terms:
+* **Allowed**: You are encouraged to clone, run, modify, study, and integrate this software for your own personal, hobbyist, educational, or private ambient setups.
+* **Prohibited**: You **cannot** use this repository, compiled outputs, or derivative works for commercial earnings, monetization, renting, leasing, reselling, or profit-making setups (such as monetized professional streams, retail installations, or commercial venues).
+* **Modifications**: Modified versions can only be distributed under the same non-commercial, personal-use limitations, keeping the owner's copyright header intact.
+
+---
+
+## 9. Legal & Compliance: WiZ Socket Integration
+
+The WiZ light control engine in SpectraStrike Hub ([wiz.py](file:///C:/Users/aayus/.gemini/antigravity-ide/scratch/wled-wiz-hub/backend/wiz.py)) is implemented using low-level sockets communicating via open local JSON-RPC protocol over UDP (Port 38899). 
+* **Zero Proprietary SDKs**: Communication utilizes only built-in standard Python sockets.
+* **No Reverse-Engineering**: The command schema uses publicly documented local JSON-RPC methods (`getPilot`, `setPilot`) exposed natively by the bulb's firmware.
+* **Fully Legal & Compliant**: No encrypted keys, proprietary binaries, or firmware blobs are stored, extracted, or distributed within this repository, ensuring maximum legal compliance for local network device automation.
