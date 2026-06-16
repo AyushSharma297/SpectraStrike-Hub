@@ -332,7 +332,7 @@ export default function MusicSyncPanel({ devices }) {
       <div className="responsive-grid-equal" style={{ gap: '1.5rem' }}>
 
         {/* Left Column: Controls */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', alignItems: 'stretch', textAlign: 'left' }}>
 
           {/* Mode Selector */}
           <div className="control-row">
@@ -395,8 +395,8 @@ export default function MusicSyncPanel({ devices }) {
           {/* Base Color (for single-color modes) */}
           {usesBaseColor && (
             <div className="control-row">
-              <label style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Base Color</label>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.4rem' }}>
+              <label style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontWeight: 600, textAlign: 'left', display: 'block', width: '100%' }}>Base Color</label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginTop: '0.4rem', justifyContent: 'flex-start', width: '100%' }}>
                 <input
                   type="color"
                   value={baseColor}

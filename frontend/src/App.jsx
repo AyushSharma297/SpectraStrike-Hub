@@ -1154,9 +1154,8 @@ export default function App() {
           </button>
 
           <button 
-            className={`side-nav-item ${navTab === 'about' ? 'active' : ''}`} 
+            className={`side-nav-item about-nav-item ${navTab === 'about' ? 'active' : ''}`} 
             onClick={() => setNavTab('about')}
-            style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '0.75rem', marginTop: '0.5rem' }}
           >
             <Info size={18} style={{ color: 'var(--accent-cyan)' }} />
             <span style={{ color: 'var(--text-main)' }}>About SpectraStrike</span>
@@ -1164,7 +1163,7 @@ export default function App() {
         </div>
 
         {/* BOTTOM ENGINE STATS */}
-        <div style={{ marginTop: 'auto', borderTop: '1px solid var(--border-color)', paddingTop: '1.25rem' }}>
+        <div className="side-nav-footer">
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
             <span style={{ 
               width: '8px', 

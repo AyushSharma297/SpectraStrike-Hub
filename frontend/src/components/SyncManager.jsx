@@ -632,10 +632,9 @@ export default function SyncManager({
               </div>
 
               {/* Color Picker */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '0.75rem' }}>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Muzzle Flash Color Accent</span>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                  <span style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: 'var(--text-muted)' }}>{flashColor.toUpperCase()}</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '0.75rem' }}>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: 600 }}>Muzzle Flash Color Accent</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginTop: '0.2rem' }}>
                   <input 
                     type="color" 
                     value={flashColor}
@@ -644,14 +643,15 @@ export default function SyncManager({
                       border: 'none',
                       outline: 'none',
                       background: 'transparent',
-                      width: '26px',
-                      height: '26px',
+                      width: '32px',
+                      height: '32px',
                       cursor: 'pointer',
                       padding: 0,
-                      borderRadius: '50%',
+                      borderRadius: '8px',
                       overflow: 'hidden'
                     }}
                   />
+                  <span style={{ fontSize: '0.75rem', fontFamily: 'monospace', color: 'var(--text-secondary)' }}>{flashColor.toUpperCase()}</span>
                 </div>
               </div>
             </div>
