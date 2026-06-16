@@ -2,6 +2,25 @@
 
 > **A futuristic, glassmorphic smart lighting hub for unified control of WLED, WiZ, OpenRGB, and Windows Dynamic Lighting devices with real-time screen synchronization.**
 
+## 📸 Interface Preview
+
+<div align="center">
+  <img src="frontend/public/dashboard_preview.png" alt="SpectraStrike Dashboard" width="90%" style="border-radius: 12px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.08);" />
+  <p><i>Figure 1: Unified Glassmorphic Dashboard Overview</i></p>
+  
+  <br />
+  
+  <img src="frontend/public/music_sync_preview.png" alt="Music Sync Engine" width="90%" style="border-radius: 12px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.08);" />
+  <p><i>Figure 2: Real-time 8-Band FFT Music Sync Dashboard with Palette Editor</i></p>
+  
+  <br />
+  
+  <img src="frontend/public/screen_sync_preview.png" alt="Ambient Screen Sync" width="90%" style="border-radius: 12px; margin-bottom: 20px; border: 1px solid rgba(255,255,255,0.08);" />
+  <p><i>Figure 3: Interactive Display Coordinate Zone Mapping & Muzzle Flash Trigger Settings</i></p>
+</div>
+
+---
+
 SpectraStrike Hub is a unified, high-performance, and low-latency smart lighting control hub and synchronization service. It aggregates diverse local IoT protocols—**WLED controllers (HTTP/UDP)**, **Philips WiZ bulbs (UDP JSON-RPC)**, **OpenRGB SDK servers (TCP)**, and **Windows Dynamic Lighting (UWP WinRT LampArray)**—into a single, responsive control plane optimized for immersive gaming environments.
 
 Designed for real-time applications, SpectraStrike Hub includes a **SignalRGB-style pixel painting grid** for granular lightstrip control, an **interactive screen ambient sync (Ambilight) mapping canvas** supporting HTML5 drag-and-drop assigning, **Multi-Zone LED Segment Sync**, **TrueColor Manual Channel Calibration**, and a fully-compliant **Model Context Protocol (MCP) server** for AI agent orchestration.
@@ -85,6 +104,7 @@ SpectraStrike Hub includes these production-ready features:
 - ✅ **Multi-Zone Segments**: Split lightstrips into independent screen regions
 - ✅ **Interactive Canvas Mapping**: Drag-and-drop coordinate zone assignment
 - ✅ **Bilinear Downsampling**: Hardware-optimized color averaging
+- ✅ **Music Sync Engine**: High-fidelity real-time loopback audio visualizer with 8 response modes (Beat Pulse, Sound Bar, Spectrum Divider, Energy VU, Color Organ, Bass Strobe, Single Pulse, Spectrum Wave) and custom gradient palette customizer
 
 ### Color & Calibration
 - ✅ **TrueColor Manual Calibration**: 3x3 matrix correction for hardware color tints
@@ -284,6 +304,40 @@ On Windows 11, HID-compliant lighting devices (keyboards, motherboards, mouse ar
    lamp_array.set_all_colors(c)
    ```
    *Note: Ensure "Background Light Control" is enabled in Windows Settings -> Personalization -> Dynamic Lighting to allow control when the application window is minimized.*
+
+### 2.4 How Music Sync Engine & FFT Analysis Work
+
+The real-time audio visualization is handled in a separate daemon thread (`MusicSyncWorker` in [music_sync.py](backend/music_sync.py)) to process stereo audio frames at high speeds without bottlenecking the main application.
+
+```text
++------------------+     +------------------+     +-----------------------+     +--------------------+
+|  Audio Loopback  |     |   FFT Analysis   |     | Automatic Gain Control|     |   Response Modes   |
+|   (soundcard)    | --> |  (scipy.fftpack) | --> |   (AGC Peak Decay)    | --> | (DRGB UDP Stream)  |
++------------------+     +------------------+     +-----------------------+     +--------------------+
+```
+
+#### Step 1: Low-Latency Audio Loopback Capture
+Using the `soundcard` library, SpectraStrike Hub hooks directly into the OS audio subsystem (WASAPI on Windows) in loopback mode. It captures what you hear (speaker output) in chunks of 512 samples at a sampling rate of 44,100Hz:
+- **Zero-latency driver hot-plugging:** If headphones are plugged in or the default system playback device changes, the capture loop automatically re-initializes and hooks to the new active default driver.
+
+#### Step 2: Fast Fourier Transform (FFT)
+To map audio to light frequencies, the captured stereo signal is merged into mono and processed using a Fast Fourier Transform (FFT):
+```python
+fft_data = np.abs(np.fft.rfft(chunk_data))
+```
+The raw FFT frequencies are then grouped into 8 logarithmic bands representing standard frequency groups (Sub-bass, Bass, Low-mids, Mid-range, Upper-mids, Presence, Brilliance, Treble) using a custom scaling matrix.
+
+#### Step 3: Automatic Gain Control (AGC) & Envelope Filtering
+To keep the light output responsive across all volume levels:
+1. **Dynamic Normalization:** The system tracks peak audio energy over time with a slow decay parameter ($0.997$). The raw signal is divided by this tracked peak to normalize the amplitude between $0.0$ and $1.0$.
+2. **Envelope Filters:** Smooth rise/fall attack and decay envelopes are applied (attack=0.65, decay=0.60) to prevent flickering, ensuring immediately responsive light transients.
+
+#### Step 4: Light Rendering & Dispatch
+The normalized amplitude values are fed into the selected response mode:
+- **VU Meter:** Lights fill the strip progressively based on overall energy.
+- **Sound Bar:** Each of the 8 bands maps to an independent section of the WLED strip, lighting up like a graphic equalizer.
+- **Beat Pulse:** Lights flash a solid base color on transient low-frequency (bass) energy triggers.
+- **Spectrum Wave:** A scrolling gradient wave where the scroll speed is modulated by the overall beat energy.
 
 ---
 
