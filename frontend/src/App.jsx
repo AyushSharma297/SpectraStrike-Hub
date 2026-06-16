@@ -1,4 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
+import StatsBar from './components/StatsBar';
+import DeviceSidebar from './components/DeviceSidebar';
+import ControlPanel from './components/ControlPanel';
+import SyncManager from './components/SyncManager';
+import ToastManager from './components/ToastManager';
+import AboutPanel from './components/AboutPanel';
+import MusicSyncPanel from './components/MusicSyncPanel';
+import { motion, AnimatePresence } from 'framer-motion';
 import {
   Sun,
   Tv,
@@ -23,7 +31,9 @@ import {
   Zap,
   Play,
   Save,
-  Wand2
+  Wand2,
+  Info,
+  Music
 } from 'lucide-react';
 
 const PRESET_EFFECTS = [
@@ -46,6 +56,7 @@ export default function App() {
   const [loadingScan, setLoadingScan] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [scanMessage, setScanMessage] = useState('');
+  const [navTab, setNavTab] = useState('dashboard');
   
   // Form State for manual addition
   const [newIp, setNewIp] = useState('');
@@ -62,6 +73,24 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('control'); // 'control' | 'paint'
   const [wledSegments, setWledSegments] = useState({}); // { deviceId: [{ start: 0, end: 10, zone: 'left' }, ...] }
   const [draggedOverZone, setDraggedOverZone] = useState(null);
+  
+  // Tactical Game Mode / Muzzle Flash config
+  const [flashEnabled, setFlashEnabled] = useState(false);
+  const [flashThreshold, setFlashThreshold] = useState(45);
+  const [flashColor, setFlashColor] = useState('#ffddaa');
+  const [flashDuration, setFlashDuration] = useState(3);
+
+  // Screen placement boundary configurations
+  const [zoneConfigs, setZoneConfigs] = useState({
+    left: 15,
+    right: 15,
+    top: 15,
+    bottom: 15,
+    center_x_min: 25,
+    center_x_max: 75,
+    center_y_min: 25,
+    center_y_max: 75
+  });
   
   // Local form state for adding a segment
   const [segStart, setSegStart] = useState(0);
@@ -93,10 +122,16 @@ export default function App() {
   const [scenes, setScenes] = useState([]);
   const [groups, setGroups] = useState([]);
   const [schedules, setSchedules] = useState([]);
+  const [presets, setPresets] = useState([]);
   const [paletteScheme, setPaletteScheme] = useState('analogous');
   const [paletteBase, setPaletteBase] = useState('#a855f7');
   const [paletteResults, setPaletteResults] = useState([]);
   const [paletteMessage, setPaletteMessage] = useState('');
+  const [toast, setToast] = useState(null);
+
+  const showToast = (message, type = 'info') => {
+    setToast({ message, type });
+  };
 
   const [newSceneName, setNewSceneName] = useState('');
   const [newGroupName, setNewGroupName] = useState('');
@@ -127,6 +162,8 @@ export default function App() {
     fetchScenes();
     fetchGroups();
     fetchSchedules();
+    fetchZoneConfigs();
+    fetchPresets();
 
     const interval = setInterval(() => {
       fetchDevices(true);
@@ -188,9 +225,126 @@ export default function App() {
         setSyncMode(data.mode || 'average');
         setSyncFps(data.fps || 20);
         setMonitorIdx(data.monitor_idx || 1);
+        
+        setFlashEnabled(data.flash_enabled || false);
+        setFlashThreshold(data.flash_threshold || 45);
+        if (data.flash_color) {
+          setFlashColor(rgbToHex(data.flash_color[0], data.flash_color[1], data.flash_color[2]));
+        }
+        setFlashDuration(data.flash_duration || 3);
       }
     } catch (err) {
       console.error('Error fetching sync status:', err);
+    }
+  };
+
+  const fetchZoneConfigs = async () => {
+    try {
+      const res = await fetch('/api/sync/zones');
+      if (res.ok) {
+        const data = await res.json();
+        setZoneConfigs(data);
+      }
+    } catch (err) {
+      console.error('Error fetching zone configs:', err);
+    }
+  };
+
+  const saveZoneConfigs = async (newConfigs) => {
+    try {
+      const res = await fetch('/api/sync/zones', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newConfigs)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setZoneConfigs(data);
+        showToast('Placement boundaries updated successfully!', 'success');
+      }
+    } catch (err) {
+      console.error('Failed to save zone configs:', err);
+      showToast('Failed to save boundaries: ' + err.message, 'error');
+    }
+  };
+
+  const resetSyncParams = async () => {
+    setSyncMode('average');
+    setSyncFps(20);
+    setMonitorIdx(1);
+    if (syncActive) {
+      await applySyncSettings(true, { syncMode: 'average', syncFps: 20, monitorIdx: 1 });
+    }
+    showToast('Sync parameters reset to defaults.', 'info');
+  };
+
+  const resetMuzzleFlashParams = async () => {
+    setFlashEnabled(false);
+    setFlashThreshold(45);
+    setFlashColor('#ffddaa');
+    setFlashDuration(3);
+    if (syncActive) {
+      await applySyncSettings(true, {
+        flash_enabled: false,
+        flash_threshold: 45,
+        flash_color: hexToRgb('#ffddaa'),
+        flash_duration: 3
+      });
+    }
+    showToast('Muzzle flash parameters reset to defaults.', 'info');
+  };
+
+  const resetZoneConfigs = async () => {
+    const defaults = {
+      left: 15,
+      right: 15,
+      top: 15,
+      bottom: 15,
+      center_x_min: 25,
+      center_x_max: 75,
+      center_y_min: 25,
+      center_y_max: 75
+    };
+    await saveZoneConfigs(defaults);
+    showToast('Placement boundaries reset to defaults.', 'info');
+  };
+
+  const resetDeviceCalibration = async (deviceId) => {
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/calibration`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          r_seen: [255, 0, 0],
+          g_seen: [0, 255, 0],
+          b_seen: [0, 0, 255],
+          gamma: 2.2,
+          min_r: 0,
+          min_g: 0,
+          min_b: 0,
+          max_r: 255,
+          max_g: 255,
+          max_b: 255,
+          temp: 6500
+        })
+      });
+      if (res.ok) {
+        setCalRedSeen('#ff0000');
+        setCalGreenSeen('#00ff00');
+        setCalBlueSeen('#0000ff');
+        setCalGamma(2.2);
+        setCalMinR(0);
+        setCalMinG(0);
+        setCalMinB(0);
+        setCalMaxR(255);
+        setCalMaxG(255);
+        setCalMaxB(255);
+        setCalTemp(6500);
+        showToast('Color calibration reset to factory defaults.', 'info');
+      }
+    } catch (err) {
+      console.error('Failed to reset calibration:', err);
+      showToast('Failed to reset calibration: ' + err.message, 'error');
     }
   };
 
@@ -266,6 +420,49 @@ export default function App() {
     }
   };
 
+  const fetchPresets = async () => {
+    try {
+      const res = await fetch('/api/presets');
+      if (res.ok) {
+        const data = await res.json();
+        setPresets(data);
+      }
+    } catch (err) {
+      console.error('Error fetching presets:', err);
+    }
+  };
+
+  const applyPreset = async (presetId) => {
+    try {
+      const res = await fetch(`/api/presets/${presetId}/apply`, { method: 'POST' });
+      if (res.ok) {
+        showToast(`Preset "${presetId}" applied successfully`, 'success');
+        fetchDevices();
+        setSyncActive(false);
+      } else {
+        showToast('Failed to apply preset', 'error');
+      }
+    } catch (err) {
+      console.error('Error applying preset:', err);
+      showToast('Error applying preset', 'error');
+    }
+  };
+
+  const applyGroupPreset = async (groupId, presetId) => {
+    try {
+      const res = await fetch(`/api/groups/${groupId}/preset/${presetId}/apply`, { method: 'POST' });
+      if (res.ok) {
+        showToast(`Applied preset "${presetId}" to group`, 'success');
+        fetchDevices();
+      } else {
+        showToast('Failed to apply preset to group', 'error');
+      }
+    } catch (err) {
+      console.error('Error applying group preset:', err);
+      showToast('Error applying group preset', 'error');
+    }
+  };
+
   const generatePalette = async () => {
     try {
       const baseValue = paletteBase.replace('#', '');
@@ -312,12 +509,14 @@ export default function App() {
         setNewSceneName('');
         fetchScenes();
         fetchStats();
+        showToast('Scene saved successfully!', 'success');
       } else {
         const err = await res.json();
-        alert(err.detail || 'Unable to save scene');
+        showToast(err.detail || 'Unable to save scene', 'error');
       }
     } catch (err) {
       console.error('Failed to save scene:', err);
+      showToast('Failed to save scene', 'error');
     }
   };
 
@@ -351,7 +550,7 @@ export default function App() {
 
   const createGroup = async () => {
     if (!newGroupName.trim()) {
-      alert('Group name is required');
+      showToast('Group name is required', 'error');
       return;
     }
     try {
@@ -365,12 +564,14 @@ export default function App() {
         setGroupDeviceIds([]);
         fetchGroups();
         fetchStats();
+        showToast('Group created successfully!', 'success');
       } else {
         const err = await res.json();
-        alert(err.detail || 'Unable to create group');
+        showToast(err.detail || 'Unable to create group', 'error');
       }
     } catch (err) {
       console.error('Failed to create group:', err);
+      showToast('Failed to create group', 'error');
     }
   };
 
@@ -447,11 +648,11 @@ export default function App() {
 
   const createSchedule = async () => {
     if (!newScheduleName.trim() || !scheduleTime) {
-      alert('Schedule name and time are required');
+      showToast('Schedule name and time are required', 'error');
       return;
     }
     if (scheduleAction === 'scene' && !scheduleSceneId) {
-      alert('Please select a scene for the scene action');
+      showToast('Please select a scene for the scene action', 'error');
       return;
     }
     try {
@@ -479,12 +680,14 @@ export default function App() {
         setScheduleSceneId('');
         fetchSchedules();
         fetchStats();
+        showToast('Schedule created successfully!', 'success');
       } else {
         const err = await res.json();
-        alert(err.detail || 'Unable to create schedule');
+        showToast(err.detail || 'Unable to create schedule', 'error');
       }
     } catch (err) {
       console.error('Failed to create schedule:', err);
+      showToast('Failed to create schedule', 'error');
     }
   };
 
@@ -629,11 +832,11 @@ export default function App() {
         })
       });
       if (res.ok) {
-        alert('Advanced color calibration applied successfully!');
+        showToast('Advanced color calibration applied successfully!', 'success');
       }
     } catch (err) {
       console.error('Failed to save calibration:', err);
-      alert('Failed to save calibration: ' + err.message);
+      showToast('Failed to save calibration: ' + err.message, 'error');
     }
   };
 
@@ -700,12 +903,13 @@ export default function App() {
         setNewIp('');
         setNewName('');
         setShowAddForm(false);
+        showToast('Device added successfully!', 'success');
       } else {
         const errData = await res.json();
-        alert(`Failed to add device: ${errData.detail || 'Unknown error'}`);
+        showToast(`Failed to add device: ${errData.detail || 'Unknown error'}`, 'error');
       }
     } catch (err) {
-      alert(`Error adding device: ${err.message}`);
+      showToast(`Error adding device: ${err.message}`, 'error');
     }
   };
 
@@ -768,36 +972,46 @@ export default function App() {
     }
   };
 
-  const toggleScreenSync = async () => {
-    const nextActive = !syncActive;
+  const applySyncSettings = async (overrideActive = null, customParams = {}) => {
+    const isActive = overrideActive !== null ? overrideActive : syncActive;
     const layoutActive = Object.keys(layoutMapping).filter(id => layoutMapping[id] && layoutMapping[id] !== 'none');
     const segmentsActive = Object.keys(wledSegments).filter(id => wledSegments[id] && wledSegments[id].length > 0);
     const activeDeviceIds = Array.from(new Set([...layoutActive, ...segmentsActive]));
     
-    if (nextActive && activeDeviceIds.length === 0) {
-      alert('Please map at least one active controller or segment zone before syncing.');
+    if (isActive && activeDeviceIds.length === 0) {
+      showToast('Please map at least one active controller or segment zone before syncing.', 'error');
       return;
     }
+
+    const payload = {
+      device_ids: activeDeviceIds,
+      active: isActive,
+      mode: customParams.syncMode !== undefined ? customParams.syncMode : syncMode,
+      fps: parseInt(customParams.syncFps !== undefined ? customParams.syncFps : syncFps),
+      monitor_idx: parseInt(customParams.monitorIdx !== undefined ? customParams.monitorIdx : monitorIdx),
+      flash_enabled: customParams.flashEnabled !== undefined ? customParams.flashEnabled : flashEnabled,
+      flash_threshold: parseInt(customParams.flashThreshold !== undefined ? customParams.flashThreshold : flashThreshold),
+      flash_color: hexToRgb(customParams.flashColor !== undefined ? customParams.flashColor : flashColor),
+      flash_duration: parseInt(customParams.flashDuration !== undefined ? customParams.flashDuration : flashDuration)
+    };
 
     try {
       const res = await fetch('/api/sync/screen', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          device_ids: activeDeviceIds,
-          active: nextActive,
-          mode: syncMode,
-          fps: parseInt(syncFps),
-          monitor_idx: parseInt(monitorIdx)
-        })
+        body: JSON.stringify(payload)
       });
       if (res.ok) {
         const data = await res.json();
         setSyncActive(data.active);
       }
     } catch (err) {
-      console.error('Failed to toggle screen sync:', err);
+      console.error('Failed to apply screen sync settings:', err);
     }
+  };
+
+  const toggleScreenSync = () => {
+    applySyncSettings(!syncActive);
   };
 
   const hexToRgb = (hex) => {
@@ -862,346 +1076,614 @@ export default function App() {
 
   return (
     <div className="app-wrapper">
+      {/* Background Animated Pattern and Blobs */}
+      <div className="app-bg-container">
+        <div className="backdrop-grid-pattern"></div>
+        <div className="backdrop-glow-blob blob-purple"></div>
+        <div className="backdrop-glow-blob blob-cyan"></div>
+        <div className="backdrop-glow-blob blob-rose"></div>
+      </div>
       
-      {/* BRAND HEADER */}
-      <header className="app-header">
-        <div className="brand-section">
+      {/* LEFT SIDE NAVIGATION BAR */}
+      <div className="side-nav">
+        <div className="side-nav-brand">
           <div className="logo-icon-wrapper">
             <Lightbulb style={{ width: '1.4rem', height: '1.4rem', color: '#fff' }} />
           </div>
           <div className="brand-title-group">
-            <h1>SPECTRASTRIKE HUB</h1>
-            <p>Combat Ambient & Game Lighting Dashboard</p>
+            <h1>SPECTRASTRIKE</h1>
+            <p>Tactical Ambient Sync</p>
           </div>
         </div>
 
-        <div className="header-controls">
-          {scanMessage && (
-            <div className={`status-badge ${loadingScan ? 'active' : ''}`}>
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: loadingScan ? '#22d3ee' : '#f43f5e', display: 'inline-block' }}></span>
-              <span>{scanMessage}</span>
-            </div>
-          )}
+        <div className="side-nav-menu">
+          <button 
+            className={`side-nav-item ${navTab === 'dashboard' ? 'active' : ''}`} 
+            onClick={() => setNavTab('dashboard')}
+          >
+            <Layout size={18} />
+            <span>Dashboard</span>
+          </button>
           
-          <button
-            onClick={triggerScan}
-            disabled={loadingScan}
-            className="btn"
+          <button 
+            className={`side-nav-item ${navTab === 'devices' ? 'active' : ''}`} 
+            onClick={() => setNavTab('devices')}
           >
-            <RefreshCw style={{ width: '1rem', height: '1rem', color: '#06b6d4' }} className={loadingScan ? 'animate-spin' : ''} />
-            <span>{loadingScan ? 'Scanning...' : 'Scan Subnets'}</span>
+            <Sliders size={18} />
+            <span>Device Controller</span>
           </button>
 
-          <button
-            onClick={() => setShowAddForm(!showAddForm)}
-            className={`btn btn-icon ${showAddForm ? 'active' : ''}`}
+          <button 
+            className={`side-nav-item ${navTab === 'sync' ? 'active' : ''}`} 
+            onClick={() => setNavTab('sync')}
           >
-            <Plus style={{ width: '1.2rem', height: '1.2rem' }} />
+            <Tv size={18} />
+            <span>Ambient Screen Sync</span>
+          </button>
+
+          <button 
+            className={`side-nav-item ${navTab === 'music' ? 'active' : ''}`} 
+            onClick={() => setNavTab('music')}
+          >
+            <Music size={18} />
+            <span>Music Sync</span>
+          </button>
+
+          <button 
+            className={`side-nav-item ${navTab === 'scenes' ? 'active' : ''}`} 
+            onClick={() => setNavTab('scenes')}
+          >
+            <Sparkles size={18} />
+            <span>Scenes & Groups</span>
+          </button>
+
+          <button 
+            className={`side-nav-item ${navTab === 'schedules' ? 'active' : ''}`} 
+            onClick={() => setNavTab('schedules')}
+          >
+            <Clock size={18} />
+            <span>Automation</span>
+          </button>
+
+          <button 
+            className={`side-nav-item ${navTab === 'palette' ? 'active' : ''}`} 
+            onClick={() => setNavTab('palette')}
+          >
+            <Palette size={18} />
+            <span>Palette Matcher</span>
+          </button>
+
+          <button 
+            className={`side-nav-item ${navTab === 'about' ? 'active' : ''}`} 
+            onClick={() => setNavTab('about')}
+            style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '0.75rem', marginTop: '0.5rem' }}
+          >
+            <Info size={18} style={{ color: 'var(--accent-cyan)' }} />
+            <span style={{ color: 'var(--text-main)' }}>About SpectraStrike</span>
           </button>
         </div>
-      </header>
 
-      <div className="stats-strip">
-        <div className="stats-card">
-          <Activity style={{ width: '1.1rem', height: '1.1rem' }} />
-          <div>
-            <span>Controllers Online</span>
-            <strong>{stats.device_count}</strong>
-          </div>
-        </div>
-        <div className="stats-card">
-          <Sun style={{ width: '1.1rem', height: '1.1rem' }} />
-          <div>
-            <span>Power Active</span>
-            <strong>{stats.devices_on}</strong>
-          </div>
-        </div>
-        <div className="stats-card">
-          <Zap style={{ width: '1.1rem', height: '1.1rem' }} />
-          <div>
-            <span>Total LEDs</span>
-            <strong>{stats.total_leds}</strong>
-          </div>
-        </div>
-        <div className="stats-card">
-          <Cpu style={{ width: '1.1rem', height: '1.1rem' }} />
-          <div>
-            <span>Sync FPS</span>
-            <strong>{stats.sync?.fps_actual || 0}</strong>
-          </div>
-        </div>
-        <div className="stats-card">
-          <Clock style={{ width: '1.1rem', height: '1.1rem' }} />
-          <div>
-            <span>Uptime</span>
-            <strong>{Math.floor((stats.uptime_seconds || 0) / 3600)}h</strong>
+        {/* BOTTOM ENGINE STATS */}
+        <div style={{ marginTop: 'auto', borderTop: '1px solid var(--border-color)', paddingTop: '1.25rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+            <span style={{ 
+              width: '8px', 
+              height: '8px', 
+              borderRadius: '50%', 
+              backgroundColor: syncActive ? '#06b6d4' : '#f43f5e', 
+              display: 'inline-block',
+              boxShadow: syncActive ? '0 0 10px #06b6d4' : 'none',
+              animation: syncActive ? 'pulse 1.5s infinite' : 'none'
+            }}></span>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Sync Engine {syncActive ? 'Active' : 'Offline'}
+            </span>
           </div>
         </div>
       </div>
 
-      {/* MANUAL CONTROLLER REGISTRATION */}
-      {showAddForm && (
-        <div className="add-form-panel">
-          <h3 style={{ fontSize: '0.9rem', fontWeight: '700', color: '#c4b5fd', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Plus style={{ width: '1.1rem', height: '1.1rem' }} />
-            <span>Add Physical Controller Manually</span>
-          </h3>
-          
-          <form onSubmit={handleAddDevice}>
-            <div className="form-row">
-              <div className="form-group">
-                <label>IP Address</label>
-                <input
-                  type="text"
-                  placeholder="e.g. 192.168.1.150"
-                  value={newIp}
-                  onChange={(e) => setNewIp(e.target.value)}
-                  required
-                  className="input-field"
-                />
-              </div>
-              <div className="form-group">
-                <label>Device Type</label>
-                <select
-                  value={newType}
-                  onChange={(e) => setNewType(e.target.value)}
-                  className="select-dropdown"
-                  style={{ width: '100%', padding: '0.6rem 0.8rem' }}
-                >
-                  <option value="wled">WLED Controller</option>
-                  <option value="wiz">Philips WiZ Bulb</option>
-                </select>
-              </div>
-              {newType === 'wled' ? (
-                <div className="form-group">
-                  <label>Total LEDs</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="1000"
-                    value={newLedCount}
-                    onChange={(e) => setNewLedCount(e.target.value)}
-                    className="input-field"
-                  />
-                </div>
-              ) : (
-                <div className="form-group">
-                  <label>Custom Name</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Bedside Bulb"
-                    value={newName}
-                    onChange={(e) => setNewName(e.target.value)}
-                    className="input-field"
-                  />
-                </div>
-              )}
-              <div>
-                <button type="submit" className="btn btn-primary" style={{ width: '100%', height: '2.5rem' }}>
-                  Register Controller
-                </button>
-              </div>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* DASHBOARD LAYOUT */}
-      <main className="dashboard-grid">
+      {/* RIGHT SIDE MAIN CONTAINER */}
+      <div className="main-content">
         
-        {/* COLUMN 1: SIDEBAR CONTROLLERS */}
-        <section className="sidebar-column">
-          
-          {/* DEVICES BOX */}
-          <div className="glass-card">
-            <div className="card-title-bar">
-              <h2 className="card-title">Active Controllers</h2>
-              <span className="tag">{devices.length} Devices</span>
-            </div>
-
-            <div className="device-list">
-              {devices.length === 0 ? (
-                <div className="customizer-empty-panel" style={{ padding: '2.5rem 1rem', border: '1px dashed rgba(255,255,255,0.06)' }}>
-                  <AlertCircle style={{ width: '2rem', height: '2rem', color: '#64748b', marginBottom: '0.5rem' }} />
-                  <p style={{ fontSize: '0.8rem' }}>No physical controllers detected yet.</p>
-                  <p style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '4px' }}>Click "Scan Subnets" or manually register IPs.</p>
-                </div>
-              ) : (
-                devices.map(dev => {
-                  const isSelected = selectedDeviceId === dev.id;
-                  const power = dev.state?.on || false;
-                  const bri = Math.round(((dev.state?.bri || 0) / 255) * 100);
-                  const activeColor = dev.state?.color 
-                    ? `rgb(${dev.state.color[0]}, ${dev.state.color[1]}, ${dev.state.color[2]})` 
-                    : '#fff';
-
-                  return (
-                    <div
-                      key={dev.id}
-                      onClick={() => handleDeviceSelect(dev.id)}
-                      className={`device-card ${isSelected ? 'selected' : ''} ${power ? 'active' : ''}`}
-                      draggable={true}
-                      onDragStart={(e) => handleDragStartDevice(e, dev.id)}
-                    >
-                      <div className="device-card-left">
-                        <div 
-                          className="device-icon-halo"
-                          style={{ 
-                            background: power ? `rgba(${dev.state?.color?.[0] || 168}, ${dev.state?.color?.[1] || 85}, ${dev.state?.color?.[2] || 247}, 0.12)` : undefined,
-                            borderColor: power ? activeColor : undefined
-                          }}
-                        >
-                          <Lightbulb style={{ width: '1.1rem', height: '1.1rem', color: power ? activeColor : '#64748b' }} />
-                        </div>
-                        <div className="device-card-info">
-                          <h4>{dev.name}</h4>
-                          <p>{dev.ip}</p>
-                          <div className="device-tags">
-                            <span className="tag">{dev.type}</span>
-                            {power && <span className="tag-active-info">{bri}% Brightness</span>}
-                          </div>
-                        </div>
-                      </div>
-
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          controlDeviceState(dev.id, { on: !power });
-                        }}
-                        className={`power-toggle-btn ${power ? 'active' : ''}`}
-                        style={{ width: '2rem', height: '2rem', borderRadius: '8px' }}
-                      >
-                        <Power style={{ width: '0.9rem', height: '0.9rem' }} />
-                      </button>
-                    </div>
-                  );
-                })
-              )}
-            </div>
+        {/* HEADER CONTROL BAR */}
+        <header className="main-header">
+          <div>
+            <h2 style={{ fontFamily: 'var(--font-family-header)', fontSize: '1.3rem', fontWeight: '900', letterSpacing: '0.03em', textTransform: 'uppercase', color: 'var(--text-main)' }}>
+              {navTab === 'dashboard' ? 'Dashboard Overview' : 
+               navTab === 'devices' ? 'Device Controller' : 
+               navTab === 'sync' ? 'Ambient Screen Sync' : 
+               navTab === 'music' ? 'Music Sync Engine' : 
+               navTab === 'scenes' ? 'Scenes & Groups' : 
+               navTab === 'schedules' ? 'Scheduled Automations' : 
+               navTab === 'about' ? 'About SpectraStrike' : 'Ambient Palette Matcher'}
+            </h2>
+            <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+              SpectraStrike Combat Ambient Command Center
+            </p>
           </div>
 
-          {/* SCREEN SYNC & LAYOUT */}
-          <div className="glass-card">
-            <div className="card-title-bar">
-              <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <Tv style={{ width: '1.1rem', height: '1.1rem', color: '#06b6d4' }} />
-                <span>Screen Ambient Sync</span>
-              </h2>
-              <span className={`status-badge ${syncActive ? 'active' : ''}`} style={{ padding: '0.2rem 0.5rem', fontSize: '0.65rem' }}>
-                {syncActive ? 'Active' : 'Offline'}
-              </span>
-            </div>
-
-            {/* Monitor Mockup Layout */}
-            <div className="monitor-mockup-area">
-              <div className="monitor-frame">
-                <div className="monitor-inner">
-                  <div
-                    className={`sync-border-left ${isZoneActive('left') ? 'active' : ''} ${draggedOverZone === 'left' ? 'drag-hover' : ''}`}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDragEnter={() => setDraggedOverZone('left')}
-                    onDragLeave={() => setDraggedOverZone(null)}
-                    onDrop={(e) => handleDropOnZone(e, 'left')}
-                  ></div>
-                  <div
-                    className={`sync-border-top ${isZoneActive('top') ? 'active' : ''} ${draggedOverZone === 'top' ? 'drag-hover' : ''}`}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDragEnter={() => setDraggedOverZone('top')}
-                    onDragLeave={() => setDraggedOverZone(null)}
-                    onDrop={(e) => handleDropOnZone(e, 'top')}
-                  ></div>
-                  <div
-                    className={`sync-border-right ${isZoneActive('right') ? 'active' : ''} ${draggedOverZone === 'right' ? 'drag-hover' : ''}`}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDragEnter={() => setDraggedOverZone('right')}
-                    onDragLeave={() => setDraggedOverZone(null)}
-                    onDrop={(e) => handleDropOnZone(e, 'right')}
-                  ></div>
-                  <div
-                    className={`sync-border-bottom ${isZoneActive('bottom') ? 'active' : ''} ${draggedOverZone === 'bottom' ? 'drag-hover' : ''}`}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDragEnter={() => setDraggedOverZone('bottom')}
-                    onDragLeave={() => setDraggedOverZone(null)}
-                    onDrop={(e) => handleDropOnZone(e, 'bottom')}
-                  ></div>
-                  <div
-                    className={`sync-inner-center ${isZoneActive('center') ? 'active' : ''} ${draggedOverZone === 'center' ? 'drag-hover' : ''}`}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDragEnter={() => setDraggedOverZone('center')}
-                    onDragLeave={() => setDraggedOverZone(null)}
-                    onDrop={(e) => handleDropOnZone(e, 'center')}
-                  ></div>
-
-                  <Monitor style={{ width: '1.75rem', height: '1.75rem', color: syncActive ? '#06b6d4' : '#334155' }} />
-                  <span style={{ fontSize: '0.55rem', fontFamily: 'monospace', marginTop: '4px' }}>MONITOR {monitorIdx}</span>
-                  {syncActive && <span className="monitor-status-text">AMBIENT STREAMING</span>}
-                </div>
+          <div className="header-controls">
+            {scanMessage && (
+              <div className={`status-badge ${loadingScan ? 'active' : ''}`}>
+                <span style={{ width: '6px', height: '6px', borderRadius: '50%', backgroundColor: loadingScan ? '#22d3ee' : '#f43f5e', display: 'inline-block' }}></span>
+                <span>{scanMessage}</span>
               </div>
-            </div>
+            )}
+            
+            <button
+              onClick={triggerScan}
+              disabled={loadingScan}
+              className="btn"
+              title="Scan Network Subnets"
+            >
+              <RefreshCw style={{ width: '1rem', height: '1rem', color: '#06b6d4' }} className={loadingScan ? 'animate-spin' : ''} />
+              <span>{loadingScan ? 'Scanning...' : 'Scan Subnets'}</span>
+            </button>
 
-            {/* Mapping Config Controls */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              <div className="slider-group-grid">
-                <div className="form-group">
-                  <label>Frequency Rate</label>
-                  <select
-                    value={syncFps}
-                    onChange={(e) => setSyncFps(e.target.value)}
-                    disabled={syncActive}
-                    className="select-dropdown"
-                  >
-                    <option value="10">10 FPS</option>
-                    <option value="15">15 FPS</option>
-                    <option value="20">20 FPS</option>
-                    <option value="30">30 FPS</option>
-                    <option value="60">60 FPS</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label>Sync Sampling Mode</label>
-                  <select
-                    value={syncMode}
-                    onChange={(e) => setSyncMode(e.target.value)}
-                    disabled={syncActive}
-                    className="select-dropdown"
-                  >
-                    <option value="average">Whole Average</option>
-                    <option value="border">Border Frames</option>
-                  </select>
-                </div>
-              </div>
+            <button
+              onClick={() => {
+                setNavTab('devices');
+                setShowAddForm(!showAddForm);
+              }}
+              className={`btn btn-icon ${showAddForm ? 'active' : ''}`}
+              title="Add Device manually"
+            >
+              <Plus style={{ width: '1.2rem', height: '1.2rem' }} />
+            </button>
+          </div>
+        </header>
 
-              {/* Mappings */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <h4 className="layout-matrix-title">Zone Assignments</h4>
-                <div className="mapping-list">
-                  {devices.length === 0 ? (
-                    <p style={{ fontSize: '0.75rem', color: '#64748b', textAlign: 'center', padding: '1rem' }}>No controllers to assign.</p>
-                  ) : (
-                    devices.map(dev => {
-                      const currentZone = layoutMapping[dev.id] || 'none';
-                      const hasSegments = wledSegments[dev.id] && wledSegments[dev.id].length > 0;
-                      return (
-                        <div key={dev.id} className="mapping-row">
-                          <span>{dev.name}</span>
-                          {hasSegments ? (
-                            <span style={{ fontSize: '0.7rem', color: '#c4b5fd', fontWeight: '700', textTransform: 'uppercase' }}>
-                              {wledSegments[dev.id].length} Zones Mapped
-                            </span>
-                          ) : (
-                            <select
-                              value={currentZone}
-                              onChange={(e) => handleLayoutChange(dev.id, e.target.value === 'none' ? '' : e.target.value)}
-                              className="select-dropdown"
-                              style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}
+        <ToastManager toast={toast} />
+
+        {/* WORKSPACE BODY */}
+        <div className="view-body">
+          
+          {/* 1. DASHBOARD OVERVIEW */}
+          {navTab === 'dashboard' && (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}
+            >
+              <StatsBar stats={stats} />
+              
+              <div className="dashboard-quick-grid">
+                {/* DEVICES QUICK CONTROL GRID */}
+                <div className="glass-card" style={{ gridColumn: 'span 8' }}>
+                  <div className="card-title-bar">
+                    <span className="card-title">Network Light Controllers</span>
+                    <button onClick={() => setNavTab('devices')} className="btn" style={{ padding: '0.35rem 0.75rem', fontSize: '0.75rem' }}>
+                      Configure Devices
+                    </button>
+                  </div>
+                  
+                  <div className="responsive-grid-equal" style={{ gap: '1rem', marginTop: '0.5rem' }}>
+                    {devices.length === 0 ? (
+                      <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', gridColumn: 'span 2', textAlign: 'center', padding: '2rem' }}>
+                        No controllers found. Use the Scan button to search the network.
+                      </p>
+                    ) : (
+                      devices.map(dev => {
+                        const activeColor = dev.state?.on && dev.state?.color 
+                          ? `rgb(${dev.state.color[0]}, ${dev.state.color[1]}, ${dev.state.color[2]})` 
+                          : dev.state?.on ? '#a855f7' : '#475569';
+                        return (
+                          <div 
+                            key={dev.id} 
+                            style={{ 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              justifyContent: 'space-between', 
+                              padding: '1rem', 
+                              borderRadius: '16px', 
+                              border: '1px solid var(--border-color)', 
+                              background: 'rgba(15, 23, 42, 0.35)',
+                              boxShadow: dev.state?.on ? `0 0 10px rgba(${dev.state.color ? dev.state.color.join(',') : '168,85,247'}, 0.05)` : 'none'
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                              <div style={{ 
+                                width: '10px', 
+                                height: '10px', 
+                                borderRadius: '50%', 
+                                backgroundColor: activeColor,
+                                boxShadow: dev.state?.on ? `0 0 8px ${activeColor}` : 'none'
+                              }}></div>
+                              <div>
+                                <h4 style={{ fontSize: '0.85rem', fontWeight: '700', color: 'var(--text-main)' }}>{dev.name}</h4>
+                                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>{dev.ip}</span>
+                              </div>
+                            </div>
+
+                            <button 
+                              className={`power-toggle-btn ${dev.state?.on ? 'active' : ''}`}
+                              onClick={() => controlDeviceState(dev.id, { on: !dev.state?.on })}
+                              style={{ width: '2rem', height: '2rem' }}
                             >
-                              <option value="none">Disabled</option>
-                              <option value="left">Left Edge</option>
-                              <option value="top">Top Edge</option>
-                              <option value="right">Right Edge</option>
-                              <option value="bottom">Bottom Edge</option>
-                              <option value="center">Center / Inside</option>
-                            </select>
+                              <Power size={12} />
+                            </button>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
+                {/* SYNC ENGINE WIDGET */}
+                <div className="glass-card" style={{ gridColumn: 'span 4' }}>
+                  <span className="card-title">Sync Engine Status</span>
+                  
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '0.5rem', flex: 1, justifyContent: 'center' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.6rem' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Engine State</span>
+                      <strong style={{ color: syncActive ? 'var(--accent-cyan)' : 'var(--text-muted)' }}>
+                        {syncActive ? 'ACTIVE' : 'OFFLINE'}
+                      </strong>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.6rem' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Sync Targets</span>
+                      <strong>{Object.keys(layoutMapping).length} Mapped</strong>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>FPS actual</span>
+                      <strong style={{ color: 'var(--accent-purple)' }}>{stats.sync?.fps_actual || 0} FPS</strong>
+                    </div>
+                    
+                    <button 
+                      onClick={toggleScreenSync}
+                      className={`btn ${syncActive ? 'btn-rose' : 'btn-primary'}`}
+                      style={{ width: '100%', marginTop: '0.75rem', height: '2.5rem' }}
+                    >
+                      {syncActive ? 'Stop Sync' : 'Start Screen Sync'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* 2. DEVICE CONTROLLER & PAINT CANVAS */}
+          {navTab === 'devices' && (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              className="dashboard-grid" style={{ padding: 0, gap: '1.5rem', height: '100%', alignItems: 'stretch' }}
+            >
+              <DeviceSidebar 
+                devices={devices}
+                selectedDeviceId={selectedDeviceId}
+                setSelectedDeviceId={handleDeviceSelect}
+                loadingScan={loadingScan}
+                triggerScan={triggerScan}
+                scanMessage={scanMessage}
+                showAddForm={showAddForm}
+                setShowAddForm={setShowAddForm}
+                handleAddDevice={handleAddDevice}
+                newIp={newIp}
+                setNewIp={setNewIp}
+                newType={newType}
+                setNewType={setNewType}
+                newName={newName}
+                setNewName={setNewName}
+                newLedCount={newLedCount}
+                setNewLedCount={setNewLedCount}
+                fetchDevices={fetchDevices}
+              />
+              <div className="main-column" style={{ height: '100%' }}>
+                <ControlPanel 
+                  selectedDev={selectedDev}
+                  activeTab={activeTab}
+                  setActiveTab={setActiveTab}
+                  controlDeviceState={controlDeviceState}
+                  selectedDeviceId={selectedDeviceId}
+                  PRESET_EFFECTS={PRESET_EFFECTS}
+                  calRedSeen={calRedSeen}
+                  calGreenSeen={calGreenSeen}
+                  calBlueSeen={calBlueSeen}
+                  calGamma={calGamma}
+                  setCalGamma={setCalGamma}
+                  calMinR={calMinR}
+                  setCalMinR={setCalMinR}
+                  calMinG={calMinG}
+                  setCalMinG={setCalMinG}
+                  calMinB={calMinB}
+                  setCalMinB={setCalMinB}
+                  calMaxR={calMaxR}
+                  setCalMaxR={setCalMaxR}
+                  calMaxG={calMaxG}
+                  setCalMaxG={setCalMaxG}
+                  calMaxB={calMaxB}
+                  setCalMaxB={setCalMaxB}
+                  calTemp={calTemp}
+                  setCalTemp={setCalTemp}
+                  showAdvancedSettings={showAdvancedSettings}
+                  setShowAdvancedSettings={setShowAdvancedSettings}
+                  saveDeviceCalibration={saveDeviceCalibration}
+                  ledColors={ledColors}
+                  paintColor={paintColor}
+                  setPaintColor={setPaintColor}
+                  handlePaintPixel={handlePaintPixel}
+                  handlePixelMouseEnter={handlePixelMouseEnter}
+                  fillAllPixels={fillAllPixels}
+                  clearAllPixels={clearAllPixels}
+                  isDrawing={isDrawing}
+                  setIsDrawing={setIsDrawing}
+                  resetDeviceCalibration={resetDeviceCalibration}
+                />
+              </div>
+            </motion.div>
+          )}
+
+          {/* 3. AMBIENT SCREEN SYNC */}
+          {navTab === 'sync' && (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              style={{ maxWidth: '800px', margin: '0 auto' }}
+            >
+              <SyncManager 
+                devices={devices}
+                syncActive={syncActive}
+                setSyncActive={setSyncActive}
+                syncMode={syncMode}
+                setSyncMode={setSyncMode}
+                syncFps={syncFps}
+                setSyncFps={setSyncFps}
+                monitorIdx={monitorIdx}
+                setMonitorIdx={setMonitorIdx}
+                layoutMapping={layoutMapping}
+                setLayoutMapping={setLayoutMapping}
+                wledSegments={wledSegments}
+                setWledSegments={setWledSegments}
+                draggedOverZone={draggedOverZone}
+                setDraggedOverZone={setDraggedOverZone}
+                handleDropOnZone={handleDropOnZone}
+                handleDragStartDevice={handleDragStartDevice}
+                handleDragStartSegment={handleDragStartSegment}
+                updateSegmentZone={updateSegmentZone}
+                handleAddSegment={handleAddSegment}
+                handleDeleteSegment={handleDeleteSegment}
+                toggleScreenSync={toggleScreenSync}
+                isZoneActive={isZoneActive}
+                fetchDevices={fetchDevices}
+                flashEnabled={flashEnabled}
+                setFlashEnabled={setFlashEnabled}
+                flashThreshold={flashThreshold}
+                setFlashThreshold={setFlashThreshold}
+                flashColor={flashColor}
+                setFlashColor={setFlashColor}
+                flashDuration={flashDuration}
+                setFlashDuration={setFlashDuration}
+                applySyncSettings={applySyncSettings}
+                zoneConfigs={zoneConfigs}
+                saveZoneConfigs={saveZoneConfigs}
+                resetSyncParams={resetSyncParams}
+                resetMuzzleFlashParams={resetMuzzleFlashParams}
+                resetZoneConfigs={resetZoneConfigs}
+              />
+            </motion.div>
+          )}
+
+          {/* MUSIC SYNC ENGINE */}
+          {navTab === 'music' && (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+            >
+              <MusicSyncPanel devices={devices} />
+            </motion.div>
+          )}
+
+          {/* 4. SCENES & GROUPS VIEW */}
+          {navTab === 'scenes' && (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}
+            >
+              
+              {/* GLOBAL PRESETS CARD */}
+              <div className="glass-card">
+                <span className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Sparkles size={16} style={{ color: 'var(--accent-purple)' }} />
+                  Tactical Command Presets
+                </span>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '2px', marginBottom: '0.75rem' }}>
+                  Execute synchronized ambient setups across all lights instantly.
+                </p>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem' }}>
+                  {presets.map(p => {
+                    const PresetIcon = p.icon === 'Power' ? Power : 
+                                     p.icon === 'AlertCircle' ? AlertCircle :
+                                     p.icon === 'Zap' ? Zap :
+                                     p.icon === 'Sun' ? Sun : Palette;
+                    return (
+                      <button 
+                        key={p.id}
+                        onClick={() => applyPreset(p.id)}
+                        className="btn btn-preset-tactical"
+                        style={{ 
+                          display: 'flex', 
+                          flexDirection: 'column', 
+                          alignItems: 'flex-start', 
+                          gap: '0.5rem', 
+                          padding: '1.25rem',
+                          borderRadius: '16px',
+                          textAlign: 'left',
+                          background: 'rgba(15, 23, 42, 0.4)',
+                          border: '1px solid var(--border-color)',
+                          cursor: 'pointer',
+                          transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                          <div style={{
+                            width: '2rem',
+                            height: '2rem',
+                            borderRadius: '8px',
+                            background: p.id === 'breach_alert' ? 'rgba(244, 63, 94, 0.15)' : 'rgba(168, 85, 247, 0.15)',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            border: p.id === 'breach_alert' ? '1px solid rgba(244, 63, 94, 0.3)' : '1px solid rgba(168, 85, 247, 0.3)',
+                            color: p.id === 'breach_alert' ? 'var(--accent-rose)' : 'var(--accent-purple)'
+                          }}>
+                            <PresetIcon size={16} />
+                          </div>
+                          <span style={{ fontWeight: '700', fontSize: '0.85rem', color: 'var(--text-main)' }}>{p.name}</span>
+                        </div>
+                        <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', lineHeight: '1.3' }}>{p.description}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="responsive-grid-equal" style={{ gap: '2rem' }}>
+              {/* SCENES MANAGER CARD */}
+              <div className="glass-card">
+                <span className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Sparkles size={16} style={{ color: 'var(--accent-purple)' }} />
+                  Ambient Scenes
+                </span>
+                
+                <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.25rem', marginTop: '0.75rem' }}>
+                  <input 
+                    type="text" 
+                    placeholder="Name active setup..." 
+                    value={newSceneName} 
+                    onChange={(e) => setNewSceneName(e.target.value)} 
+                    className="input-field"
+                    style={{ flex: 1 }}
+                  />
+                  <button onClick={saveScene} className="btn btn-primary" style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                    <Save size={14} />
+                    <span>Save</span>
+                  </button>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '420px', overflowY: 'auto', paddingRight: '4px' }}>
+                  {scenes.length === 0 ? (
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center', padding: '2rem' }}>
+                      No scenes recorded yet.
+                    </p>
+                  ) : (
+                    scenes.map(sc => (
+                      <div key={sc.id} className="scene-row">
+                        <div>
+                          <h4 style={{ fontWeight: 'bold' }}>{sc.name}</h4>
+                          <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{Object.keys(sc.states || {}).length} device states snapshot</p>
+                        </div>
+                        <div className="scene-action-group">
+                          <button onClick={() => applyScene(sc.id)} className="btn btn-icon" title="Apply Scene"><Play size={12} style={{ color: 'var(--accent-cyan)' }} /></button>
+                          <button onClick={() => deleteScene(sc.id)} className="btn btn-icon" title="Delete Scene"><Trash2 size={12} style={{ color: 'var(--accent-rose)' }} /></button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* GROUPS MANAGER CARD */}
+              <div className="glass-card">
+                <span className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Users size={16} style={{ color: 'var(--accent-cyan)' }} />
+                  Unified Device Groups
+                </span>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginBottom: '1.25rem', marginTop: '0.75rem' }}>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <input 
+                      type="text" 
+                      placeholder="Group Name..." 
+                      value={newGroupName} 
+                      onChange={(e) => setNewGroupName(e.target.value)} 
+                      className="input-field"
+                      style={{ flex: 1 }}
+                    />
+                    <button onClick={createGroup} className="btn btn-primary" title="Create Group">
+                      <Plus size={16} />
+                    </button>
+                  </div>
+                  
+                  {newGroupName && (
+                    <div style={{ background: 'rgba(2, 6, 23, 0.3)', padding: '0.75rem', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
+                      <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>Select devices for this group:</p>
+                      <div className="group-chip-list">
+                        {devices.map(dev => (
+                          <div 
+                            key={dev.id}
+                            className={`group-chip ${groupDeviceIds.includes(dev.id) ? 'active' : ''}`}
+                            onClick={() => toggleGroupDevice(dev.id)}
+                          >
+                            <span>{dev.name}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '420px', overflowY: 'auto', paddingRight: '4px' }}>
+                  {groups.length === 0 ? (
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center', padding: '2rem' }}>
+                      No device groups created.
+                    </p>
+                  ) : (
+                    groups.map(gp => {
+                      const isExpanded = expandedGroupId === gp.id;
+                      return (
+                        <div key={gp.id} className="group-panel">
+                          <div className="group-header-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <button 
+                              className="group-expand-btn" 
+                              onClick={() => setExpandedGroupId(isExpanded ? null : gp.id)}
+                            >
+                              <ChevronDown size={14} style={{ transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
+                            </button>
+                            <div style={{ flex: 1, marginLeft: '0.5rem' }}>
+                              <span className="group-name">{gp.name}</span>
+                              <div className="group-meta">{gp.device_ids?.length || 0} devices linked</div>
+                            </div>
+                            <button onClick={() => deleteGroup(gp.id)} className="btn btn-icon" title="Delete Group"><Trash2 size={12} style={{ color: 'var(--accent-rose)' }} /></button>
+                          </div>
+
+                          {isExpanded && (
+                            <div className="group-expanded-body">
+                              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                                <button className="btn btn-primary" onClick={() => controlGroup(gp.id, { on: true })} style={{ flex: 1, height: '2rem', fontSize: '0.75rem' }}>On</button>
+                                <button className="btn" onClick={() => controlGroup(gp.id, { on: false })} style={{ flex: 1, height: '2rem', fontSize: '0.75rem' }}>Off</button>
+                              </div>
+                              <div className="control-row">
+                                <label style={{ fontSize: '0.7rem' }}>Brightness</label>
+                                <input type="range" min="0" max="255" defaultValue="128" onChange={(e) => controlGroup(gp.id, { bri: parseInt(e.target.value) })} className="slider-range-bar" />
+                              </div>
+                              <div className="control-row">
+                                <label style={{ fontSize: '0.7rem' }}>Color</label>
+                                <input type="color" defaultValue="#a855f7" onChange={(e) => controlGroup(gp.id, { color: hexToRgb(e.target.value) })} style={{ height: '30px', padding: 0 }} />
+                              </div>
+                              <div style={{ marginTop: '0.75rem', borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'block', marginBottom: '0.5rem' }}>Group Presets</label>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(100px, 1fr))', gap: '0.5rem' }}>
+                                  {presets.map(p => (
+                                    <button 
+                                      key={p.id}
+                                      onClick={() => applyGroupPreset(gp.id, p.id)}
+                                      className="btn btn-preset-tactical"
+                                      style={{ padding: '0.4rem 0.6rem', fontSize: '0.7rem', textAlign: 'center', justifyContent: 'center' }}
+                                      title={p.description}
+                                    >
+                                      <span>{p.name}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
                           )}
                         </div>
                       );
@@ -1209,1129 +1691,240 @@ export default function App() {
                   )}
                 </div>
               </div>
-
-              <button
-                onClick={toggleScreenSync}
-                className="btn btn-primary"
-                style={{ 
-                  width: '100%', 
-                  padding: '0.75rem', 
-                  borderRadius: '12px',
-                  background: syncActive ? 'rgba(244, 63, 94, 0.15)' : undefined,
-                  borderColor: syncActive ? 'var(--accent-rose)' : undefined,
-                  color: syncActive ? '#fecdd3' : undefined,
-                  boxShadow: syncActive ? 'none' : undefined
-                }}
-              >
-                <Tv style={{ width: '1rem', height: '1rem' }} />
-                <span>{syncActive ? 'Stop Sync Stream' : 'Start Sync Stream'}</span>
-              </button>
             </div>
-          </div>
-
-          <div className="glass-card">
-            <div className="card-title-bar">
-              <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <Sparkles style={{ width: '1.1rem', height: '1.1rem', color: '#a855f7' }} />
-                <span>Scenes & Presets</span>
-              </h2>
-              <span className="tag">{scenes.length} Saved</span>
-            </div>
-            <div style={{ display: 'grid', gap: '1rem' }}>
-              <div className="form-row" style={{ alignItems: 'center' }}>
-                <input
-                  type="text"
-                  value={newSceneName}
-                  onChange={(e) => setNewSceneName(e.target.value)}
-                  placeholder="New scene name"
-                  className="input-field"
-                  style={{ flex: 1 }}
-                />
-                <button type="button" onClick={saveScene} className="btn btn-primary" style={{ marginLeft: '0.75rem' }}>
-                  <Save style={{ width: '1rem', height: '1rem' }} />
-                  <span>Save Scene</span>
-                </button>
-              </div>
-              {scenes.length === 0 ? (
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>No scenes saved yet. Capture the current lighting state to build presets.</p>
-              ) : (
-                scenes.map(scene => (
-                  <div key={scene.id} className="scene-row">
-                    <div>
-                      <h4>{scene.name}</h4>
-                      <p>{Object.keys(scene.states || {}).length} devices mapped</p>
-                    </div>
-                    <div className="scene-action-group">
-                      <button onClick={() => applyScene(scene.id)} className="btn btn-icon">
-                        <Play style={{ width: '0.9rem', height: '0.9rem' }} />
-                      </button>
-                      <button onClick={() => deleteScene(scene.id)} className="btn btn-icon" style={{ color: '#f43f5e' }}>
-                        <Trash2 style={{ width: '0.9rem', height: '0.9rem' }} />
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-
-          <div className="glass-card">
-            <div className="card-title-bar">
-              <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <Users style={{ width: '1.1rem', height: '1.1rem', color: '#06b6d4' }} />
-                <span>Group Control</span>
-              </h2>
-              <span className="tag">{groups.length} Groups</span>
-            </div>
-            <div style={{ display: 'grid', gap: '1rem' }}>
-              {/* Create new group form */}
-              <div style={{ display: 'grid', gap: '0.75rem' }}>
-                <input
-                  type="text"
-                  value={newGroupName}
-                  onChange={(e) => setNewGroupName(e.target.value)}
-                  placeholder="New group name"
-                  className="input-field"
-                />
-                <div className="group-chip-list">
-                  {devices.map(dev => (
-                    <label key={dev.id} className={`group-chip ${groupDeviceIds.includes(dev.id) ? 'active' : ''}`}>
-                      <input type="checkbox" checked={groupDeviceIds.includes(dev.id)} onChange={() => toggleGroupDevice(dev.id)} />
-                      {dev.name}
-                    </label>
-                  ))}
-                </div>
-                <button type="button" onClick={createGroup} className="btn btn-primary">
-                  <Plus style={{ width: '1rem', height: '1rem' }} />
-                  <span>Create Group</span>
-                </button>
-              </div>
-
-              {groups.length === 0 ? (
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>Create a group to control multiple controllers at once.</p>
-              ) : (
-                groups.map(group => {
-                  const isExpanded = expandedGroupId === group.id;
-                  const isEditing = editingGroupId === group.id;
-                  const wledOnly = allGroupWled(group);
-                  const curBri = groupBri[group.id] ?? 128;
-                  const curColor = groupColor[group.id] ?? '#a855f7';
-                  const curFx = groupFx[group.id] ?? 0;
-
-                  return (
-                    <div key={group.id} className="group-panel">
-                      {/* Group header row */}
-                      <div className="group-header-row">
-                        <button
-                          className="group-expand-btn"
-                          onClick={() => setExpandedGroupId(isExpanded ? null : group.id)}
-                        >
-                          <ChevronDown style={{ width: '1rem', height: '1rem', transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
-                        </button>
-                        <div style={{ flex: 1 }}>
-                          {isEditing ? (
-                            <input
-                              className="input-field group-rename-input"
-                              value={editingGroupName}
-                              onChange={(e) => setEditingGroupName(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') updateGroup(group.id, { name: editingGroupName, device_ids: editingGroupDeviceIds });
-                                if (e.key === 'Escape') setEditingGroupId(null);
-                              }}
-                              autoFocus
-                            />
-                          ) : (
-                            <h4 className="group-name" onDoubleClick={() => startEditingGroup(group)}>{group.name}</h4>
-                          )}
-                          <p className="group-meta">{group.device_ids?.length || 0} devices · {wledOnly ? 'WLED' : 'Mixed'}</p>
-                        </div>
-                        <div className="scene-action-group">
-                          <button title="Turn On" onClick={() => controlGroup(group.id, { on: true })} className="btn btn-icon group-on-btn">
-                            <Zap style={{ width: '0.9rem', height: '0.9rem' }} />
-                          </button>
-                          <button title="Turn Off" onClick={() => controlGroup(group.id, { on: false })} className="btn btn-icon">
-                            <Power style={{ width: '0.9rem', height: '0.9rem' }} />
-                          </button>
-                          {isEditing ? (
-                            <button title="Save" onClick={() => updateGroup(group.id, { name: editingGroupName, device_ids: editingGroupDeviceIds })} className="btn btn-icon" style={{ color: '#22c55e' }}>
-                              <Check style={{ width: '0.9rem', height: '0.9rem' }} />
-                            </button>
-                          ) : (
-                            <button title="Edit" onClick={() => startEditingGroup(group)} className="btn btn-icon">
-                              <Sliders style={{ width: '0.9rem', height: '0.9rem' }} />
-                            </button>
-                          )}
-                          <button title="Delete" onClick={() => deleteGroup(group.id)} className="btn btn-icon" style={{ color: '#f43f5e' }}>
-                            <Trash2 style={{ width: '0.9rem', height: '0.9rem' }} />
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Expanded controls */}
-                      {isExpanded && (
-                        <div className="group-expanded-body">
-                          {/* Brightness */}
-                          <div className="control-row" style={{ marginBottom: 0 }}>
-                            <div className="control-label-wrapper">
-                              <label>Group Brightness</label>
-                              <span className="control-value-text">{Math.round((curBri / 255) * 100)}%</span>
-                            </div>
-                            <div className="slider-input-wrapper">
-                              <Sun style={{ width: '1rem', height: '1rem' }} />
-                              <input
-                                type="range" min="0" max="255"
-                                value={curBri}
-                                onChange={(e) => setGroupBri(prev => ({ ...prev, [group.id]: parseInt(e.target.value) }))}
-                                onMouseUp={(e) => controlGroup(group.id, { bri: parseInt(e.target.value) })}
-                                onTouchEnd={(e) => controlGroup(group.id, { bri: parseInt(e.target.value) })}
-                                className="slider-range-bar"
-                              />
-                            </div>
-                          </div>
-
-                          {/* Color */}
-                          <div className="control-row" style={{ marginBottom: 0 }}>
-                            <label style={{ fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>Group Color</label>
-                            <div className="color-picker-box">
-                              <input
-                                type="color"
-                                value={curColor}
-                                onChange={(e) => setGroupColor(prev => ({ ...prev, [group.id]: e.target.value }))}
-                                onBlur={(e) => controlGroup(group.id, { color: hexToRgb(e.target.value) })}
-                                className="color-input-circle"
-                              />
-                              <div className="color-picker-details">
-                                <h5>All Devices</h5>
-                                <p>{curColor.toUpperCase()}</p>
-                              </div>
-                            </div>
-                            <div className="quick-colors-palette" style={{ marginTop: '0.5rem' }}>
-                              {['#a855f7','#06b6d4','#ec4899','#f97316','#22c55e','#ef4444','#eab308'].map(hex => (
-                                <button key={hex} onClick={() => { setGroupColor(prev => ({ ...prev, [group.id]: hex })); controlGroup(group.id, { color: hexToRgb(hex) }); }} className="quick-color-dot" style={{ backgroundColor: hex }} />
-                              ))}
-                            </div>
-                          </div>
-
-                          {/* Effect — only when all devices are WLED */}
-                          {wledOnly && (
-                            <div className="form-group">
-                              <label>Group Effect</label>
-                              <div style={{ position: 'relative' }}>
-                                <select
-                                  value={curFx}
-                                  onChange={(e) => { const v = parseInt(e.target.value); setGroupFx(prev => ({ ...prev, [group.id]: v })); controlGroup(group.id, { fx: v }); }}
-                                  className="select-dropdown"
-                                  style={{ width: '100%', padding: '0.6rem 0.8rem', paddingRight: '2rem' }}
-                                >
-                                  {PRESET_EFFECTS.map(fx => (
-                                    <option key={fx.id} value={fx.id}>{fx.name}</option>
-                                  ))}
-                                </select>
-                                <ChevronDown style={{ width: '1rem', height: '1rem', position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: '#64748b' }} />
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Edit membership */}
-                          {isEditing && (
-                            <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem' }}>
-                              <label style={{ fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)', display: 'block', marginBottom: '0.5rem' }}>Edit Members</label>
-                              <div className="group-chip-list">
-                                {devices.map(dev => (
-                                  <label key={dev.id} className={`group-chip ${editingGroupDeviceIds.includes(dev.id) ? 'active' : ''}`}>
-                                    <input type="checkbox" checked={editingGroupDeviceIds.includes(dev.id)} onChange={() => toggleEditingDevice(dev.id)} />
-                                    {dev.name}
-                                  </label>
-                                ))}
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => updateGroup(group.id, { name: editingGroupName, device_ids: editingGroupDeviceIds })}
-                                className="btn btn-primary"
-                                style={{ marginTop: '0.75rem', width: '100%' }}
-                              >
-                                <Check style={{ width: '1rem', height: '1rem' }} />
-                                <span>Save Changes</span>
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </section>
-
-        {/* COLUMN 2: CUSTOMIZER DETAIL PANEL */}
-        <section className="main-column">
-          {!selectedDev ? (
-            <div className="customizer-empty-panel">
-              <Layout style={{ width: '2.5rem', height: '2.5rem', color: '#64748b' }} />
-              <h3>No Device Selected</h3>
-              <p>Choose an active lighting controller from the list on the left to customize colors, settings, effects, or paint grids.</p>
-            </div>
-          ) : (
-            <div className="glass-card" style={{ padding: 0, overflow: 'hidden', minHeight: '520px', gap: 0 }}>
-              
-              {/* Header Tab panel */}
-              <div className="customizer-header">
-                <div className="customizer-title-area">
-                  <h2>{selectedDev.name}</h2>
-                  <p>{selectedDev.ip}</p>
-                </div>
-
-                <div className="customizer-toggle-controls">
-                  {selectedDev.type === 'wled' && (
-                    <div className="toggle-switch-tab-bar">
-                      <button
-                        onClick={() => setActiveTab('control')}
-                        className={`toggle-tab-btn ${activeTab === 'control' ? 'active' : ''}`}
-                      >
-                        Control Panel
-                      </button>
-                      <button
-                        onClick={() => setActiveTab('paint')}
-                        className={`toggle-tab-btn ${activeTab === 'paint' ? 'active' : ''}`}
-                      >
-                        Paint Brush
-                      </button>
-                    </div>
-                  )}
-
-                  <button
-                    onClick={() => controlDeviceState(selectedDev.id, { on: !selectedDev.state?.on })}
-                    className={`power-toggle-btn ${selectedDev.state?.on ? 'active' : ''}`}
-                  >
-                    <Power style={{ width: '1.1rem', height: '1.1rem' }} />
-                  </button>
-                </div>
-              </div>
-
-              {/* Main controls body */}
-              <div className="customizer-body">
-                
-                {activeTab === 'control' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-                    
-                    {/* Brightness Slider */}
-                    <div className="control-row">
-                      <div className="control-label-wrapper">
-                        <label>Brightness Level</label>
-                        <span className="control-value-text">
-                          {Math.round(((selectedDev.state?.bri || 0) / 255) * 100)}%
-                        </span>
-                      </div>
-                      <div className="slider-input-wrapper">
-                        <Sun style={{ width: '1rem', height: '1rem' }} />
-                        <input
-                          type="range"
-                          min="0"
-                          max="255"
-                          value={selectedDev.state?.bri || 0}
-                          onChange={(e) => controlDeviceState(selectedDev.id, { bri: parseInt(e.target.value) })}
-                          className="slider-range-bar"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Color customizers */}
-                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '1.5rem', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem' }}>
-                      
-                      {/* Pickers */}
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                        <label style={{ fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>Solid Color</label>
-                        <div className="color-picker-box">
-                          <input
-                            type="color"
-                            value={rgbToHex(
-                              selectedDev.state?.color?.[0] || 255,
-                              selectedDev.state?.color?.[1] || 255,
-                              selectedDev.state?.color?.[2] || 255
-                            )}
-                            onChange={(e) => {
-                              const rgb = hexToRgb(e.target.value);
-                              controlDeviceState(selectedDev.id, { color: rgb });
-                            }}
-                            className="color-input-circle"
-                          />
-                          <div className="color-picker-details">
-                            <h5>Color Selector</h5>
-                            <p>RGB: {selectedDev.state?.color?.join(', ') || '255, 255, 255'}</p>
-                          </div>
-                        </div>
-
-                        {/* Quick Presets */}
-                        <div className="quick-colors-palette">
-                          {['#a855f7', '#06b6d4', '#ec4899', '#f97316', '#22c55e', '#ef4444', '#eab308'].map(hex => (
-                            <button
-                              key={hex}
-                              onClick={() => controlDeviceState(selectedDev.id, { color: hexToRgb(hex) })}
-                              className="quick-color-dot"
-                              style={{ backgroundColor: hex }}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                      {/* Windows Dynamic Lighting specific note */}
-                      {selectedDev.type === 'wdl' && (
-                        <div className="wdl-note" style={{ marginTop: '1rem', padding: '0.75rem', background: 'rgba(255,255,255,0.05)', borderRadius: '8px' }}>
-                          <AlertCircle style={{ width: '1rem', height: '1rem', color: '#fbbf24' }} />
-                          <span style={{ marginLeft: '0.5rem', fontSize: '0.85rem', color: '#fbbf24' }}>
-                            This device is managed via Windows Dynamic Lighting. Changes affect compatible hardware such as keyboards, motherboards, fans, and RAM.
-                          </span>
-                        </div>
-                      )}
-
-                      {/* Device Dependent settings */}
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                        
-                        {/* WLED dropdown */}
-                        {selectedDev.type === 'wled' && (
-                          <div className="form-group">
-                            <label>Presets & Effects</label>
-                            <div style={{ position: 'relative' }}>
-                              <select
-                                value={selectedDev.state?.fx || 0}
-                                onChange={(e) => controlDeviceState(selectedDev.id, { fx: parseInt(e.target.value) })}
-                                className="select-dropdown"
-                                style={{ width: '100%', padding: '0.6rem 0.8rem', paddingRight: '2rem' }}
-                              >
-                                {PRESET_EFFECTS.map(fx => (
-                                  <option key={fx.id} value={fx.id}>{fx.name}</option>
-                                ))}
-                              </select>
-                              <ChevronDown style={{ width: '1rem', height: '1rem', position: 'absolute', right: '0.75rem', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: '#64748b' }} />
-                            </div>
-                          </div>
-                        )}
-
-                        {/* WiZ Temp */}
-                        {selectedDev.type === 'wiz' && (
-                          <div className="control-row" style={{ marginBottom: 0 }}>
-                            <div className="control-label-wrapper">
-                              <label>White Balance</label>
-                              <span className="control-value-text">{selectedDev.state?.temp || 4000}K</span>
-                            </div>
-                            <div className="slider-input-wrapper" style={{ marginTop: '0.25rem' }}>
-                              <span style={{ fontSize: '0.65rem', fontWeight: '700', color: '#f59e0b' }}>Warm</span>
-                              <input
-                                type="range"
-                                min="2200"
-                                max="6500"
-                                step="100"
-                                value={selectedDev.state?.temp || 4000}
-                                onChange={(e) => controlDeviceState(selectedDev.id, { temp: parseInt(e.target.value) })}
-                                className="slider-range-bar"
-                              />
-                              <span style={{ fontSize: '0.65rem', fontWeight: '700', color: '#22d3ee' }}>Cool</span>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* OpenRGB Panel Info */}
-                        {selectedDev.type === 'openrgb' && (
-                          <div style={{ padding: '1rem', background: 'rgba(2, 6, 23, 0.4)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#22d3ee', fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase' }}>
-                              <Cpu style={{ width: '0.9rem', height: '0.9rem' }} />
-                              <span>SDK Broadcaster</span>
-                            </div>
-                            <p style={{ fontSize: '0.7rem', color: '#94a3b8', lineHeight: '1.4' }}>
-                              OpenRGB sync commands will automatically broadcast to motherboard nodes, RAM modules, fan pins, and peripheral components.
-                            </p>
-                          </div>
-                        )}
-
-                        {/* Windows Dynamic Lighting Panel Info */}
-                        {selectedDev.type === 'wdl' && (
-                          <div style={{ padding: '1rem', background: 'rgba(2, 6, 23, 0.4)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '12px', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#22d3ee', fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase' }}>
-                              <Cpu style={{ width: '0.9rem', height: '0.9rem' }} />
-                              <span>Windows Dynamic Lighting</span>
-                            </div>
-                            <p style={{ fontSize: '0.7rem', color: '#94a3b8', lineHeight: '1.4' }}>
-                              Windows.Devices.Lights integration. Colors and brightness adjustments will apply natively to all motherboards, RAM, fans, and HID lighting arrays managed by Windows OS.
-                            </p>
-                          </div>
-                        )}
-                      </div>
-
-                    </div>
-                    
-                    {/* WLED Multi-Zone segment manager */}
-                    {selectedDev.type === 'wled' && (
-                      <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <Layers style={{ width: '1.1rem', height: '1.1rem', color: '#a855f7' }} />
-                            <div>
-                              <h4 style={{ fontSize: '0.85rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-main)' }}>
-                                Multi-Zone LED Segment Sync
-                              </h4>
-                              <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                                Map different WLED LED ranges to different screen coordinates
-                              </p>
-                            </div>
-                          </div>
-                          <label className="switch-container" style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
-                            <input
-                              type="checkbox"
-                              checked={(wledSegments[selectedDev.id] && wledSegments[selectedDev.id].length > 0) || false}
-                              onChange={(e) => {
-                                if (e.target.checked) {
-                                  handleAddSegment(selectedDev.id, 0, selectedDev.led_count || 30, 'center');
-                                } else {
-                                  saveSegmentsMapping(selectedDev.id, []);
-                                }
-                              }}
-                              style={{ display: 'none' }}
-                            />
-                            <span className={`toggle-switch-slider ${((wledSegments[selectedDev.id] && wledSegments[selectedDev.id].length > 0) ? 'active' : '')}`}
-                                  style={{
-                                    width: '2.5rem',
-                                    height: '1.25rem',
-                                    backgroundColor: (wledSegments[selectedDev.id] && wledSegments[selectedDev.id].length > 0) ? 'var(--accent-purple)' : 'rgba(255,255,255,0.1)',
-                                    borderRadius: '999px',
-                                    display: 'block',
-                                    position: 'relative',
-                                    transition: 'all 0.2s'
-                                  }}
-                            >
-                              <span style={{
-                                width: '1rem',
-                                height: '1rem',
-                                backgroundColor: '#fff',
-                                borderRadius: '50%',
-                                position: 'absolute',
-                                top: '2px',
-                                left: (wledSegments[selectedDev.id] && wledSegments[selectedDev.id].length > 0) ? '1.3rem' : '2px',
-                                transition: 'all 0.2s'
-                              }}></span>
-                            </span>
-                          </label>
-                        </div>
-                        
-                        {(wledSegments[selectedDev.id] && wledSegments[selectedDev.id].length > 0) && (
-                          <div className="segment-manager">
-                            <div className="segment-manager-header">
-                              <h4>Active Strip Divisions</h4>
-                              <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Drag rows onto Monitor Zones to map them!</span>
-                            </div>
-                            
-                            <div className="segment-list">
-                              {wledSegments[selectedDev.id].map((seg, idx) => (
-                                <div
-                                  key={idx}
-                                  draggable={true}
-                                  onDragStart={(e) => handleDragStartSegment(e, selectedDev.id, idx)}
-                                  className="segment-item-row"
-                                >
-                                  <div className="segment-drag-handle">
-                                    <Layers style={{ width: '0.9rem', height: '0.9rem', marginRight: '0.25rem', color: '#a855f7' }} />
-                                    <span style={{ fontSize: '0.75rem', fontWeight: '600' }}>Segment {idx + 1}</span>
-                                  </div>
-                                  
-                                  <div className="segment-info-fields">
-                                    <span className="segment-range-badge">LED {seg.start} - {seg.end}</span>
-                                    <span className="segment-zone-badge">{seg.zone}</span>
-                                  </div>
-                                  
-                                  <button
-                                    onClick={() => handleDeleteSegment(selectedDev.id, idx)}
-                                    className="btn"
-                                    style={{ width: '1.75rem', height: '1.75rem', padding: 0, border: 'none', background: 'transparent', color: '#f43f5e' }}
-                                  >
-                                    <Trash2 style={{ width: '0.9rem', height: '0.9rem' }} />
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                            
-                            {/* Add segment form */}
-                            <div className="segment-inputs-grid">
-                              <div className="form-group">
-                                <label style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>Start LED</label>
-                                <input
-                                  type="number"
-                                  min="0"
-                                  max={selectedDev.led_count - 1}
-                                  value={segStart}
-                                  onChange={(e) => setSegStart(parseInt(e.target.value) || 0)}
-                                  className="input-field"
-                                  style={{ padding: '0.35rem 0.5rem', fontSize: '0.75rem', height: '2rem' }}
-                                />
-                              </div>
-                              <div className="form-group">
-                                <label style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>End LED</label>
-                                <input
-                                  type="number"
-                                  min="1"
-                                  max={selectedDev.led_count}
-                                  value={segEnd}
-                                  onChange={(e) => setSegEnd(parseInt(e.target.value) || 0)}
-                                  className="input-field"
-                                  style={{ padding: '0.35rem 0.5rem', fontSize: '0.75rem', height: '2rem' }}
-                                />
-                              </div>
-                              <div className="form-group">
-                                <label style={{ fontSize: '0.65rem', color: 'var(--text-secondary)' }}>Zone</label>
-                                <select
-                                  value={segZone}
-                                  onChange={(e) => setSegZone(e.target.value)}
-                                  className="select-dropdown"
-                                  style={{ padding: '0.35rem 0.5rem', fontSize: '0.75rem', width: '100%', height: '2rem' }}
-                                >
-                                  <option value="left">Left Edge</option>
-                                  <option value="top">Top Edge</option>
-                                  <option value="right">Right Edge</option>
-                                  <option value="bottom">Bottom Edge</option>
-                                  <option value="center">Center</option>
-                                </select>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (segStart >= segEnd) {
-                                    alert("Start LED must be less than End LED");
-                                    return;
-                                  }
-                                  if (segEnd > selectedDev.led_count) {
-                                    alert(`End LED cannot exceed total strip length (${selectedDev.led_count})`);
-                                    return;
-                                  }
-                                  handleAddSegment(selectedDev.id, segStart, segEnd, segZone);
-                                }}
-                                className="btn btn-primary"
-                                style={{ height: '2rem', padding: '0 0.75rem', fontSize: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                              >
-                                Add
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Collapsible Advanced Settings Drawer */}
-                    <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '1.25rem', marginTop: '1.25rem' }}>
-                      <button
-                        type="button"
-                        onClick={() => setShowAdvancedSettings(!showAdvancedSettings)}
-                        className="btn"
-                        style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.6rem 1rem', background: 'rgba(30, 41, 59, 0.2)', borderRadius: '10px' }}
-                      >
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                          <Sliders style={{ width: '1rem', height: '1rem', color: '#06b6d4' }} />
-                          <span style={{ fontSize: '0.8rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-main)' }}>
-                            Advanced Device Settings (Calibration)
-                          </span>
-                        </div>
-                        <ChevronDown style={{ width: '1rem', height: '1rem', transform: showAdvancedSettings ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s', color: '#64748b' }} />
-                      </button>
-
-                      {showAdvancedSettings && (
-                        <div className="segment-manager" style={{ marginTop: '0.75rem', animation: 'slideDown 0.2s ease-out forwards' }}>
-                          <div className="segment-manager-header" style={{ marginBottom: '0.5rem' }}>
-                            <h4 style={{ color: '#06b6d4' }}>TrueColor Color Alignment</h4>
-                            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Match perceived channel colors for extreme accuracy</span>
-                          </div>
-
-                          {/* Quick test white/black buttons */}
-                          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
-                            <button
-                              type="button"
-                              onClick={() => controlDeviceState(selectedDev.id, { color: [255, 255, 255], on: true })}
-                              className="btn"
-                              style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.65rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem', background: 'rgba(255,255,255,0.05)' }}
-                            >
-                              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ffffff', boxShadow: '0 0 4px #ffffff' }}></span>
-                              Test White (255, 255, 255)
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => controlDeviceState(selectedDev.id, { color: [0, 0, 0], on: true })}
-                              className="btn"
-                              style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.65rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.3rem', background: 'rgba(255,255,255,0.05)' }}
-                            >
-                              <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#020617', border: '1px solid #64748b' }}></span>
-                              Test Black (0, 0, 0)
-                            </button>
-                          </div>
-
-                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem', background: 'rgba(2, 6, 23, 0.2)', padding: '0.75rem', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
-                            {/* RED */}
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', alignItems: 'center' }}>
-                              <label style={{ fontSize: '0.6rem', fontWeight: '700', color: '#ef4444', textTransform: 'uppercase' }}>Red Channel</label>
-                              <button
-                                type="button"
-                                onClick={() => controlDeviceState(selectedDev.id, { color: [255, 0, 0], on: true })}
-                                className="btn"
-                                style={{ padding: '0.25rem 0.5rem', fontSize: '0.6rem', width: '100%' }}
-                              >
-                                Test Red
-                              </button>
-                              <input
-                                type="color"
-                                value={calRedSeen}
-                                onChange={(e) => setCalRedSeen(e.target.value)}
-                                style={{ width: '2rem', height: '2rem', background: 'transparent', border: 'none', cursor: 'pointer', marginTop: '0.2rem' }}
-                              />
-                            </div>
-
-                            {/* GREEN */}
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', alignItems: 'center' }}>
-                              <label style={{ fontSize: '0.6rem', fontWeight: '700', color: '#22c55e', textTransform: 'uppercase' }}>Green Channel</label>
-                              <button
-                                type="button"
-                                onClick={() => controlDeviceState(selectedDev.id, { color: [0, 255, 0], on: true })}
-                                className="btn"
-                                style={{ padding: '0.25rem 0.5rem', fontSize: '0.6rem', width: '100%' }}
-                              >
-                                Test Green
-                              </button>
-                              <input
-                                type="color"
-                                value={calGreenSeen}
-                                onChange={(e) => setCalGreenSeen(e.target.value)}
-                                style={{ width: '2rem', height: '2rem', background: 'transparent', border: 'none', cursor: 'pointer', marginTop: '0.2rem' }}
-                              />
-                            </div>
-
-                            {/* BLUE */}
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', alignItems: 'center' }}>
-                              <label style={{ fontSize: '0.6rem', fontWeight: '700', color: '#3b82f6', textTransform: 'uppercase' }}>Blue Channel</label>
-                              <button
-                                type="button"
-                                onClick={() => controlDeviceState(selectedDev.id, { color: [0, 0, 255], on: true })}
-                                className="btn"
-                                style={{ padding: '0.25rem 0.5rem', fontSize: '0.6rem', width: '100%' }}
-                              >
-                                Test Blue
-                              </button>
-                              <input
-                                type="color"
-                                value={calBlueSeen}
-                                onChange={(e) => setCalBlueSeen(e.target.value)}
-                                style={{ width: '2rem', height: '2rem', background: 'transparent', border: 'none', cursor: 'pointer', marginTop: '0.2rem' }}
-                              />
-                            </div>
-                          </div>
-
-                          {/* Extra Calibration Settings */}
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '0.5rem', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '1rem' }}>
-                            {/* Gamma correction */}
-                            <div className="control-row" style={{ marginBottom: 0 }}>
-                              <div className="control-label-wrapper">
-                                <label style={{ fontSize: '0.65rem' }}>Gamma Correction Curve</label>
-                                <span className="control-value-text" style={{ fontSize: '0.75rem' }}>{parseFloat(calGamma).toFixed(1)}</span>
-                              </div>
-                              <input
-                                type="range"
-                                min="1.0"
-                                max="3.0"
-                                step="0.1"
-                                value={calGamma}
-                                onChange={(e) => setCalGamma(parseFloat(e.target.value))}
-                                className="slider-range-bar"
-                              />
-                            </div>
-
-                            {/* Color Temperature */}
-                            <div className="control-row" style={{ marginBottom: 0 }}>
-                              <div className="control-label-wrapper">
-                                <label style={{ fontSize: '0.65rem' }}>Color Temperature (Kelvin)</label>
-                                <span className="control-value-text" style={{ fontSize: '0.75rem' }}>{calTemp}K</span>
-                              </div>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                <span style={{ fontSize: '0.6rem', color: '#f59e0b', fontWeight: 'bold' }}>2000K (Warm)</span>
-                                <input
-                                  type="range"
-                                  min="2000"
-                                  max="10000"
-                                  step="250"
-                                  value={calTemp}
-                                  onChange={(e) => setCalTemp(parseInt(e.target.value))}
-                                  className="slider-range-bar"
-                                />
-                                <span style={{ fontSize: '0.6rem', color: '#67e8f9', fontWeight: 'bold' }}>10000K (Cool)</span>
-                              </div>
-                            </div>
-
-                            {/* Black Level Calibration */}
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                              <label style={{ fontSize: '0.65rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>Black Level Calibration (Min Offsets)</label>
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                  <span style={{ fontSize: '0.6rem', color: '#ef4444', width: '3.5rem', fontWeight: 'bold' }}>Red Min</span>
-                                  <input
-                                    type="range"
-                                    min="0"
-                                    max="100"
-                                    value={calMinR}
-                                    onChange={(e) => setCalMinR(parseInt(e.target.value))}
-                                    className="slider-range-bar"
-                                    style={{ height: '4px' }}
-                                  />
-                                  <span style={{ fontSize: '0.65rem', fontFamily: 'monospace', width: '1.5rem', textAlign: 'right' }}>{calMinR}</span>
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                  <span style={{ fontSize: '0.6rem', color: '#22c55e', width: '3.5rem', fontWeight: 'bold' }}>Green Min</span>
-                                  <input
-                                    type="range"
-                                    min="0"
-                                    max="100"
-                                    value={calMinG}
-                                    onChange={(e) => setCalMinG(parseInt(e.target.value))}
-                                    className="slider-range-bar"
-                                    style={{ height: '4px' }}
-                                  />
-                                  <span style={{ fontSize: '0.65rem', fontFamily: 'monospace', width: '1.5rem', textAlign: 'right' }}>{calMinG}</span>
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                  <span style={{ fontSize: '0.6rem', color: '#3b82f6', width: '3.5rem', fontWeight: 'bold' }}>Blue Min</span>
-                                  <input
-                                    type="range"
-                                    min="0"
-                                    max="100"
-                                    value={calMinB}
-                                    onChange={(e) => setCalMinB(parseInt(e.target.value))}
-                                    className="slider-range-bar"
-                                    style={{ height: '4px' }}
-                                  />
-                                  <span style={{ fontSize: '0.65rem', fontFamily: 'monospace', width: '1.5rem', textAlign: 'right' }}>{calMinB}</span>
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* White Balance Limits */}
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                              <label style={{ fontSize: '0.65rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>White Balance Calibration (Max Limits)</label>
-                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                  <span style={{ fontSize: '0.6rem', color: '#ef4444', width: '3.5rem', fontWeight: 'bold' }}>Red Max</span>
-                                  <input
-                                    type="range"
-                                    min="100"
-                                    max="255"
-                                    value={calMaxR}
-                                    onChange={(e) => setCalMaxR(parseInt(e.target.value))}
-                                    className="slider-range-bar"
-                                    style={{ height: '4px' }}
-                                  />
-                                  <span style={{ fontSize: '0.65rem', fontFamily: 'monospace', width: '1.5rem', textAlign: 'right' }}>{calMaxR}</span>
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                  <span style={{ fontSize: '0.6rem', color: '#22c55e', width: '3.5rem', fontWeight: 'bold' }}>Green Max</span>
-                                  <input
-                                    type="range"
-                                    min="100"
-                                    max="255"
-                                    value={calMaxG}
-                                    onChange={(e) => setCalMaxG(parseInt(e.target.value))}
-                                    className="slider-range-bar"
-                                    style={{ height: '4px' }}
-                                  />
-                                  <span style={{ fontSize: '0.65rem', fontFamily: 'monospace', width: '1.5rem', textAlign: 'right' }}>{calMaxG}</span>
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                                  <span style={{ fontSize: '0.6rem', color: '#3b82f6', width: '3.5rem', fontWeight: 'bold' }}>Blue Max</span>
-                                  <input
-                                    type="range"
-                                    min="100"
-                                    max="255"
-                                    value={calMaxB}
-                                    onChange={(e) => setCalMaxB(parseInt(e.target.value))}
-                                    className="slider-range-bar"
-                                    style={{ height: '4px' }}
-                                  />
-                                  <span style={{ fontSize: '0.65rem', fontFamily: 'monospace', width: '1.5rem', textAlign: 'right' }}>{calMaxB}</span>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-
-                          <div style={{ display: 'flex', gap: '0.5rem', width: '100%', marginTop: '0.5rem' }}>
-                            <button
-                              type="button"
-                              onClick={() => saveDeviceCalibration(selectedDev.id, calRedSeen, calGreenSeen, calBlueSeen, calGamma, calMinR, calMinG, calMinB, calMaxR, calMaxG, calMaxB, calTemp)}
-                              className="btn btn-primary"
-                              style={{ flex: 2, height: '2.25rem', fontSize: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                            >
-                              Save & Apply Calibration
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setCalRedSeen('#ff0000');
-                                setCalGreenSeen('#00ff00');
-                                setCalBlueSeen('#0000ff');
-                                setCalGamma(2.2);
-                                setCalMinR(0);
-                                setCalMinG(0);
-                                setCalMinB(0);
-                                setCalMaxR(255);
-                                setCalMaxG(255);
-                                setCalMaxB(255);
-                                setCalTemp(6500);
-                                saveDeviceCalibration(selectedDev.id, '#ff0000', '#00ff00', '#0000ff', 2.2, 0, 0, 0, 255, 255, 255, 6500);
-                              }}
-                              className="btn"
-                              style={{ flex: 1, height: '2.25rem', fontSize: '0.75rem', borderColor: 'rgba(244, 63, 94, 0.3)', color: '#f43f5e', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                            >
-                              Reset
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                  </div>
-                )}
-
-                {activeTab === 'paint' && selectedDev.type === 'wled' && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                    
-                    {/* Brush control */}
-                    <div className="paint-controls-bar">
-                      <div className="brush-color-picker">
-                        <input
-                          type="color"
-                          value={paintColor}
-                          onChange={(e) => setPaintColor(e.target.value)}
-                          style={{
-                            width: '2.25rem',
-                            height: '2.25rem',
-                            background: 'transparent',
-                            border: 'none',
-                            cursor: 'pointer'
-                          }}
-                        />
-                        <div>
-                          <h6>Brush Selector</h6>
-                          <p>Current Color: {paintColor}</p>
-                        </div>
-                      </div>
-
-                      <div className="paint-actions-row">
-                        <button onClick={fillAllPixels} className="btn" style={{ padding: '0.4rem 0.75rem', fontSize: '0.75rem' }}>
-                          Fill All
-                        </button>
-                        <button onClick={clearAllPixels} className="btn" style={{ padding: '0.4rem 0.75rem', fontSize: '0.75rem', color: '#f43f5e' }}>
-                          Erase All
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Paint Brush LED Grid */}
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                      <label style={{ fontSize: '0.75rem', fontWeight: '700', textTransform: 'uppercase', color: 'var(--text-secondary)' }}>
-                        Interactive LED Node Grid ({selectedDev.led_count || 30} pixels)
-                      </label>
-                      
-                      <div 
-                        className="pixel-grid-canvas"
-                        onMouseDown={() => setIsDrawing(true)}
-                        onMouseUp={() => setIsDrawing(false)}
-                        onMouseLeave={() => setIsDrawing(false)}
-                      >
-                        {ledColors.map((color, idx) => {
-                          const dotColor = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
-                          const hasColor = color[0] > 0 || color[1] > 0 || color[2] > 0;
-                          
-                          return (
-                            <div
-                              key={idx}
-                              onMouseDown={() => handlePaintPixel(idx)}
-                              onMouseEnter={() => handlePixelMouseEnter(idx)}
-                              className="pixel-node-dot"
-                              style={{ 
-                                backgroundColor: hasColor ? dotColor : 'rgba(30, 41, 59, 0.25)',
-                                border: hasColor ? '1.5px solid rgba(255, 255, 255, 0.45)' : '1.5px solid rgba(255, 255, 255, 0.05)',
-                                boxShadow: hasColor ? `0 0 10px ${dotColor}` : undefined,
-                                color: (color[0] + color[1] + color[2]) > 380 ? '#0f172a' : '#fff'
-                              }}
-                            >
-                              {idx + 1}
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      <div className="paint-info-footer">
-                        <AlertCircle style={{ width: '0.9rem', height: '0.9rem' }} />
-                        <span>Streams are throttled to ~14 FPS for extreme smooth network performance</span>
-                      </div>
-                    </div>
-
-                  </div>
-                )}
-                
-              </div>
-
-            </div>
+          </motion.div>
           )}
 
-          <div className="glass-card">
-            <div className="card-title-bar">
-              <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <Palette style={{ width: '1.1rem', height: '1.1rem', color: '#ec4899' }} />
-                <span>Color Palette Generator</span>
-              </h2>
-              <span className="tag">{paletteResults.length} Colors</span>
-            </div>
-            <div style={{ display: 'grid', gap: '1rem' }}>
-              <div className="form-row" style={{ alignItems: 'center' }}>
-                <input
-                  type="color"
-                  value={paletteBase}
-                  onChange={(e) => setPaletteBase(e.target.value)}
-                  className="color-input-circle"
-                  style={{ width: '2.5rem', height: '2.5rem' }}
+          {/* 5. AUTOMATION ROUTINES */}
+          {navTab === 'schedules' && (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              style={{ maxWidth: '800px', margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '1.5rem' }}
+            >
+              <div className="glass-card">
+                <span className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <Clock size={16} style={{ color: 'var(--accent-rose)' }} />
+                  Automation Scheduler
+                </span>
+
+                <div style={{ background: 'rgba(2, 6, 23, 0.3)', padding: '1rem', borderRadius: '16px', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '0.75rem' }}>
+                  <div className="responsive-grid-equal" style={{ gap: '0.75rem' }}>
+                    <div className="form-group">
+                      <label>Routine Name</label>
+                      <input 
+                        type="text" 
+                        placeholder="e.g. Morning Glow" 
+                        value={newScheduleName} 
+                        onChange={(e) => setNewScheduleName(e.target.value)} 
+                        className="input-field"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Trigger Time</label>
+                      <input 
+                        type="time" 
+                        value={scheduleTime} 
+                        onChange={(e) => setScheduleTime(e.target.value)} 
+                        className="input-field"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="responsive-grid-equal" style={{ gap: '0.75rem' }}>
+                    <div className="form-group">
+                      <label>Action Type</label>
+                      <select 
+                        value={scheduleAction} 
+                        onChange={(e) => setScheduleAction(e.target.value)} 
+                        className="select-dropdown"
+                      >
+                        <option value="on">Turn On</option>
+                        <option value="off">Turn Off</option>
+                        <option value="scene">Apply Scene</option>
+                      </select>
+                    </div>
+                    
+                    {scheduleAction === 'scene' ? (
+                      <div className="form-group">
+                        <label>Scene</label>
+                        <select 
+                          value={scheduleSceneId} 
+                          onChange={(e) => setScheduleSceneId(e.target.value)} 
+                          className="select-dropdown"
+                        >
+                          <option value="">Select Scene...</option>
+                          {scenes.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                        </select>
+                      </div>
+                    ) : (
+                      <div className="form-group">
+                        <label>Target Target</label>
+                        <select 
+                          value={scheduleTarget} 
+                          onChange={(e) => setScheduleTarget(e.target.value)} 
+                          className="select-dropdown"
+                        >
+                          <option value="all">All Devices</option>
+                          {groups.map(g => <option key={g.id} value={`group:${g.id}`}>Group: {g.name}</option>)}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="form-group">
+                    <label>Days to Repeat</label>
+                    <div className="schedule-day-row">
+                      {WEEKDAY_LABELS.map((day, idx) => (
+                        <button 
+                          key={idx}
+                          type="button"
+                          className={`btn ${scheduleDays.includes(idx) ? 'active' : ''}`}
+                          onClick={() => {
+                            if (scheduleDays.includes(idx)) {
+                              setScheduleDays(prev => prev.filter(d => d !== idx));
+                            } else {
+                              setScheduleDays(prev => [...prev, idx]);
+                            }
+                          }}
+                          style={{ padding: '0.35rem 0.65rem', fontSize: '0.7rem', flex: 1, borderRadius: '8px' }}
+                        >
+                          {day}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <button onClick={createSchedule} className="btn btn-primary" style={{ width: '100%', height: '2.5rem', marginTop: '0.5rem' }}>
+                    Create Routine
+                  </button>
+                </div>
+              </div>
+
+              <div className="glass-card">
+                <span className="card-title">Trigger Schedules</span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.75rem' }}>
+                  {schedules.length === 0 ? (
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textAlign: 'center', padding: '2rem' }}>
+                      No automation triggers active.
+                    </p>
+                  ) : (
+                    schedules.map(sch => (
+                      <div key={sch.id} className="schedule-row">
+                        <div>
+                          <h4 style={{ fontWeight: 'bold' }}>{sch.name}</h4>
+                          <p style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.7rem' }}>
+                            <span>Triggering at {sch.time} on ({sch.days?.map(d => WEEKDAY_LABELS[d]).join(', ')})</span>
+                          </p>
+                        </div>
+                        <div className="scene-action-group">
+                          <button 
+                            onClick={() => toggleSchedule(sch.id)} 
+                            className={`btn ${sch.active ? 'btn-primary' : ''}`}
+                            style={{ padding: '0.35rem 0.7rem', fontSize: '0.7rem' }}
+                          >
+                            {sch.active ? 'Active' : 'Paused'}
+                          </button>
+                          <button onClick={() => deleteSchedule(sch.id)} className="btn btn-icon">
+                            <Trash2 size={12} style={{ color: 'var(--accent-rose)' }} />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* 6. PALETTE MATCHING */}
+          {navTab === 'palette' && (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              style={{ maxWidth: '800px', margin: '0 auto' }} className="glass-card"
+            >
+              <span className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <Palette size={16} style={{ color: 'var(--accent-purple)' }} />
+                Tactical Palette Matcher
+              </span>
+
+              <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem', marginTop: '1rem' }}>
+                <input 
+                  type="color" 
+                  value={paletteBase} 
+                  onChange={(e) => setPaletteBase(e.target.value)} 
+                  style={{ width: '50px', height: '40px', padding: 0, border: '1px solid var(--border-color)', borderRadius: '8px', cursor: 'pointer' }}
                 />
-                <select
-                  value={paletteScheme}
-                  onChange={(e) => setPaletteScheme(e.target.value)}
+                <select 
+                  value={paletteScheme} 
+                  onChange={(e) => setPaletteScheme(e.target.value)} 
                   className="select-dropdown"
                   style={{ flex: 1 }}
                 >
-                  {['analogous', 'complementary', 'triadic', 'tetradic', 'monochrome'].map(option => (
-                    <option key={option} value={option}>{option.charAt(0).toUpperCase() + option.slice(1)}</option>
-                  ))}
+                  <option value="analogous">Analogous Harmony</option>
+                  <option value="monochromatic">Monochromatic Gradient</option>
+                  <option value="triad">Triadic Tri-Color</option>
+                  <option value="complementary">Complementary Match</option>
                 </select>
-                <button type="button" onClick={generatePalette} className="btn btn-primary" style={{ marginLeft: '0.75rem' }}>
-                  <Wand2 style={{ width: '1rem', height: '1rem' }} />
-                  <span>Generate</span>
+                <button onClick={generatePalette} className="btn btn-primary" style={{ padding: '0 1.5rem' }}>
+                  Generate
                 </button>
               </div>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>{paletteMessage || 'Create a theme from any base color.'}</p>
-              <div className="palette-swatch-grid">
-                {paletteResults.length === 0 ? (
-                  <div className="palette-placeholder">Generate a palette to preview colors here.</div>
-                ) : (
-                  paletteResults.map(color => (
-                    <button
-                      key={color.hex}
-                      onClick={() => setPaletteBase(color.hex)}
-                      className="palette-swatch"
-                      style={{ backgroundColor: color.hex }}
-                    >
-                      <span>{color.hex}</span>
-                    </button>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
 
-          <div className="glass-card">
-            <div className="card-title-bar">
-              <h2 className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <Clock style={{ width: '1.1rem', height: '1.1rem', color: '#fcd34d' }} />
-                <span>Schedules & Automation</span>
-              </h2>
-              <span className="tag">{schedules.length} Rules</span>
-            </div>
-            <div style={{ display: 'grid', gap: '1rem' }}>
-              <div className="form-row" style={{ gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                <input
-                  type="text"
-                  value={newScheduleName}
-                  onChange={(e) => setNewScheduleName(e.target.value)}
-                  placeholder="Schedule name"
-                  className="input-field"
-                  style={{ flex: '1 1 220px' }}
-                />
-                <input
-                  type="time"
-                  value={scheduleTime}
-                  onChange={(e) => setScheduleTime(e.target.value)}
-                  className="input-field"
-                  style={{ width: '140px' }}
-                />
-                <select
-                  value={scheduleAction}
-                  onChange={(e) => setScheduleAction(e.target.value)}
-                  className="select-dropdown"
-                  style={{ width: '140px' }}
-                >
-                  <option value="on">Turn On</option>
-                  <option value="off">Turn Off</option>
-                  <option value="scene">Apply Scene</option>
-                </select>
-              </div>
-              <div className="form-row" style={{ gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                <select
-                  value={scheduleTarget}
-                  onChange={(e) => setScheduleTarget(e.target.value)}
-                  className="select-dropdown"
-                  style={{ flex: '1 1 180px' }}
-                >
-                  <option value="all">All Controllers</option>
-                  {groups.map(group => (
-                    <option key={group.id} value={group.id}>{`Group: ${group.name}`}</option>
-                  ))}
-                  {devices.map(device => (
-                    <option key={device.id} value={device.id}>{`Device: ${device.name}`}</option>
-                  ))}
-                </select>
-                {scheduleAction === 'scene' && (
-                  <select
-                    value={scheduleSceneId}
-                    onChange={(e) => setScheduleSceneId(e.target.value)}
-                    className="select-dropdown"
-                    style={{ flex: '1 1 200px' }}
-                  >
-                    <option value="">Select scene</option>
-                    {scenes.map(scene => (
-                      <option key={scene.id} value={scene.id}>{scene.name}</option>
-                    ))}
-                  </select>
-                )}
-                <button type="button" onClick={createSchedule} className="btn btn-primary" style={{ whiteSpace: 'nowrap' }}>
-                  <Save style={{ width: '1rem', height: '1rem' }} />
-                  <span>Create Rule</span>
-                </button>
-              </div>
-              <div className="schedule-day-row">
-                {WEEKDAY_LABELS.map((label, idx) => (
-                  <button
-                    key={label}
-                    type="button"
-                    onClick={() => toggleScheduleDay(idx)}
-                    className={`btn ${scheduleDays.includes(idx) ? 'active' : ''}`}
-                    style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem' }}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-              {schedules.length === 0 ? (
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>No automation rules yet. Create schedules to trigger your lighting scenes automatically.</p>
-              ) : (
-                schedules.map(schedule => (
-                  <div key={schedule.id} className="schedule-row">
-                    <div>
-                      <h4>{schedule.name}</h4>
-                      <p>{schedule.time} • {schedule.days.map(day => WEEKDAY_LABELS[day]).join(', ')} • {schedule.action}{schedule.action === 'scene' ? ` (${scenes.find(scene => scene.id === schedule.scene_id)?.name || 'scene'})` : ''}</p>
-                    </div>
-                    <div className="scene-action-group">
-                      <button onClick={() => toggleSchedule(schedule.id)} className="btn btn-icon">
-                        <Power style={{ width: '0.9rem', height: '0.9rem' }} />
-                      </button>
-                      <button onClick={() => deleteSchedule(schedule.id)} className="btn btn-icon" style={{ color: '#f43f5e' }}>
-                        <Trash2 style={{ width: '0.9rem', height: '0.9rem' }} />
-                      </button>
-                    </div>
-                  </div>
-                ))
+              {paletteMessage && (
+                <p style={{ fontSize: '0.8rem', color: 'var(--accent-cyan)', marginBottom: '1rem', fontWeight: '600' }}>
+                  {paletteMessage}
+                </p>
               )}
-            </div>
-          </div>
-        </section>
 
-      </main>
+              {paletteResults.length > 0 ? (
+                <div className="palette-swatch-grid">
+                  {paletteResults.map((col, idx) => (
+                    <button 
+                      key={idx}
+                      className="palette-swatch"
+                      style={{ 
+                        backgroundColor: col,
+                        height: '4.5rem',
+                        boxShadow: `0 8px 16px ${col}30`
+                      }}
+                      onClick={() => {
+                        if (selectedDeviceId) {
+                          controlDeviceState(selectedDeviceId, { color: hexToRgb(col) });
+                        }
+                        setPaintColor(col);
+                        showToast(`Brush and device synced to ${col}`, 'success');
+                      }}
+                      title="Click to apply to selected device & paint brush"
+                    >
+                      <span style={{ fontSize: '0.7rem' }}>{col}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="palette-placeholder" style={{ padding: '3rem 1rem' }}>
+                  Select a seed color and scheme to generate coordinates.
+                </div>
+              )}
+            </motion.div>
+          )}
+
+          {/* 7. ABOUT PAGE */}
+          {navTab === 'about' && (
+            <motion.div 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+            >
+              <AboutPanel />
+            </motion.div>
+          )}
+
+        </div>
+      </div>
     </div>
   );
 }

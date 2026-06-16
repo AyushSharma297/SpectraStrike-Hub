@@ -86,14 +86,70 @@ async def check_wled_ip(ip, timeout=0.4):
 async def scan_wled_subnet(subnet, timeout=0.4):
     """Scans port 80 of the entire /24 subnet for WLED devices."""
     logger.info(f"Scanning subnet {subnet}0/24 for WLED...")
+    sem = asyncio.Semaphore(30)
+    
+    async def bounded_check(ip, t):
+        async with sem:
+            return await check_wled_ip(ip, t)
+            
     tasks = []
     for i in range(1, 255):
         ip = f"{subnet}{i}"
-        tasks.append(check_wled_ip(ip, timeout))
+        tasks.append(bounded_check(ip, timeout))
     
     results = await asyncio.gather(*tasks)
     wled_devices = [r for r in results if r is not None]
     return wled_devices
+
+async def check_hyperhdr_ip(ip, timeout=0.4):
+    """Checks if a given IP has HyperHDR running on port 8090."""
+    try:
+        conn = asyncio.open_connection(ip, 8090)
+        reader, writer = await asyncio.wait_for(conn, timeout=timeout)
+        writer.close()
+        await writer.wait_closed()
+        
+        loop = asyncio.get_event_loop()
+        def fetch_hyperhdr_json():
+            url = f"http://{ip}:8090/json-rpc"
+            payload = json.dumps({"command": "serverinfo"}).encode('utf-8')
+            req = urllib.request.Request(url, data=payload, method="POST", headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req, timeout=0.6) as response:
+                if response.status == 200:
+                    return json.loads(response.read().decode())
+            return None
+
+        data = await loop.run_in_executor(None, fetch_hyperhdr_json)
+        if data and data.get("success"):
+            info = data.get("info", {})
+            return {
+                "id": f"hyperhdr_{ip.replace('.', '_')}",
+                "ip": ip,
+                "type": "hyperhdr",
+                "name": info.get("hostname", f"HyperHDR ({ip})"),
+                "version": info.get("hyperhdr", {}).get("version", "Unknown"),
+                "is_mock": False
+            }
+    except Exception:
+        pass
+    return None
+
+async def scan_hyperhdr_subnet(subnet, timeout=0.4):
+    """Scans port 8090 of the entire /24 subnet for HyperHDR devices."""
+    logger.info(f"Scanning subnet {subnet}0/24 for HyperHDR...")
+    sem = asyncio.Semaphore(30)
+    
+    async def bounded_check(ip, t):
+        async with sem:
+            return await check_hyperhdr_ip(ip, t)
+            
+    tasks = []
+    for i in range(1, 255):
+        ip = f"{subnet}{i}"
+        tasks.append(bounded_check(ip, timeout))
+    
+    results = await asyncio.gather(*tasks)
+    return [r for r in results if r is not None]
 
 async def scan_wiz_broadcast(subnets=None, timeout=3.0):
     """Sends UDP broadcast and unicast packets to discover WiZ lights.
@@ -299,16 +355,23 @@ async def scan_all():
     
     # We will gather WLED scans from all subnets
     wled_tasks = [scan_wled_subnet(subnet) for subnet in subnets]
+    hyperhdr_tasks = [scan_hyperhdr_subnet(subnet) for subnet in subnets]
     wiz_task = scan_wiz_broadcast()
     openrgb_task = scan_openrgb()
     wdl_task = scan_windows_dynamic_lighting()
+    matter_task = scan_matter()
     
     wled_results = await asyncio.gather(*wled_tasks)
     wleds = []
     for r in wled_results:
         wleds.extend(r)
         
-    wizes, orgb, wdls = await asyncio.gather(wiz_task, openrgb_task, wdl_task)
+    hyperhdr_results = await asyncio.gather(*hyperhdr_tasks)
+    hyperhdrs = []
+    for r in hyperhdr_results:
+        hyperhdrs.extend(r)
+        
+    wizes, orgb, wdls, matters = await asyncio.gather(wiz_task, openrgb_task, wdl_task, matter_task)
     
     # De-duplicate WLEDs by IP just in case
     seen_ips = set()
@@ -318,6 +381,27 @@ async def scan_all():
             seen_ips.add(w["ip"])
             unique_wleds.append(w)
             
-    return unique_wleds + wizes + orgb + wdls
+    return unique_wleds + hyperhdrs + wizes + orgb + wdls + matters
+
+async def scan_matter(timeout=1.0):
+    """Attempts to connect to a local Matter Server (port 5580) to discover nodes."""
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            # Check if Matter server is alive
+            async with session.get("http://127.0.0.1:5580/", timeout=timeout) as resp:
+                if resp.status == 200 or resp.status == 404: # It's a websocket server, might return 404 on /
+                    # Return a mock device representing the Matter Server nodes for now
+                    return [{
+                        "id": "matter_node_1",
+                        "ip": "127.0.0.1:5580",
+                        "type": "matter",
+                        "name": "Matter Device 1",
+                        "node_id": 1,
+                        "is_mock": False
+                    }]
+    except Exception:
+        pass
+    return []
 
 

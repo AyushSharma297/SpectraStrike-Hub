@@ -1,5 +1,10 @@
 import os
 import sys
+import warnings
+
+# Suppress soundcard's data discontinuity warning which spams the console
+warnings.filterwarnings("ignore", category=UserWarning, message=".*data discontinuity in recording.*")
+warnings.filterwarnings("ignore", message=".*data discontinuity in recording.*")
 import json
 import time
 import uuid
@@ -21,6 +26,9 @@ from wled import WLEDClient
 from wiz import WiZClient
 from pc_lights import OpenRGBPCClient
 from screen_sync import ScreenSyncWorker
+from hyperhdr import HyperHDRClient
+from music_sync import MusicSyncWorker
+from matter import MatterClient
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("main")
@@ -45,13 +53,25 @@ CALIBRATION = {} # Maps device_id -> {"r_seen": [R,G,B], "g_seen": [R,G,B], "b_s
 SCENES = {}     # Maps scene_id -> {"id", "name", "icon", "states": {device_id: state_payload}}
 GROUPS = {}     # Maps group_id -> {"id", "name", "device_ids": [...]}
 SCHEDULES = {}  # Maps schedule_id -> {"id", "name", "time", "days", "action", "enabled", ...}
+IGNORED_IPS = set()
+CUSTOM_NAMES = {} # Maps device_id -> str
+ZONE_CONFIGS = {
+    "left": 15,
+    "right": 15,
+    "top": 15,
+    "bottom": 15,
+    "center_x_min": 25,
+    "center_x_max": 75,
+    "center_y_min": 25,
+    "center_y_max": 75
+}
 SERVER_STARTED_AT = time.time()
 
 # Persistence (scenes / groups / schedules survive restarts)
 DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hub_data.json")
 
 def load_persisted_data():
-    global SCENES, GROUPS, SCHEDULES
+    global SCENES, GROUPS, SCHEDULES, IGNORED_IPS, CUSTOM_NAMES, ZONE_CONFIGS
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, "r", encoding="utf-8") as f:
@@ -59,14 +79,26 @@ def load_persisted_data():
             SCENES = data.get("scenes", {})
             GROUPS = data.get("groups", {})
             SCHEDULES = data.get("schedules", {})
-            logger.info(f"Loaded {len(SCENES)} scenes, {len(GROUPS)} groups, {len(SCHEDULES)} schedules from disk.")
+            CUSTOM_NAMES = data.get("custom_names", {})
+            if "zone_configs" in data:
+                ZONE_CONFIGS.update(data["zone_configs"])
+            if "ignored_ips" in data:
+                IGNORED_IPS.update(data["ignored_ips"])
+            logger.info(f"Loaded {len(SCENES)} scenes, {len(GROUPS)} groups, {len(SCHEDULES)} schedules, {len(IGNORED_IPS)} ignored IPs, {len(CUSTOM_NAMES)} custom names, and customized zones from disk.")
     except Exception as e:
         logger.error(f"Failed to load persisted data: {e}")
 
 def save_persisted_data():
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump({"scenes": SCENES, "groups": GROUPS, "schedules": SCHEDULES}, f, indent=2)
+            json.dump({
+                "scenes": SCENES, 
+                "groups": GROUPS, 
+                "schedules": SCHEDULES,
+                "ignored_ips": list(IGNORED_IPS),
+                "custom_names": CUSTOM_NAMES,
+                "zone_configs": ZONE_CONFIGS
+            }, f, indent=2)
     except Exception as e:
         logger.error(f"Failed to save persisted data: {e}")
 
@@ -92,6 +124,10 @@ def get_client(device_id: str):
     elif dev["type"] == "wdl":
         from windows_dynamic_lighting import WindowsDynamicLightingClient
         client = WindowsDynamicLightingClient()
+    elif dev["type"] == "hyperhdr":
+        client = HyperHDRClient(dev["ip"], is_mock=is_mock)
+    elif dev["type"] == "matter":
+        client = MatterClient(dev.get("node_id", 0), is_mock=is_mock)
     else:
         return None
         
@@ -131,6 +167,8 @@ class DeviceResolver:
 
 device_resolver = DeviceResolver()
 sync_worker = ScreenSyncWorker(device_resolver)
+sync_worker.zone_configs = ZONE_CONFIGS
+music_sync_worker = MusicSyncWorker(device_resolver)
 
 # Pydantic Request Models
 class ControlRequest(BaseModel):
@@ -151,9 +189,32 @@ class LayoutRequest(BaseModel):
 class ScreenSyncRequest(BaseModel):
     device_ids: List[str]
     active: bool
-    mode: Optional[str] = "average" # "average" or "border"
+    mode: Optional[str] = "average" # "average", "vibrant", "dominant", "spotlight", "movie", "gaming", "chill", "scifi_neon", or "border"
     fps: Optional[int] = 20
     monitor_idx: Optional[int] = 1
+    flash_enabled: Optional[bool] = False
+    flash_threshold: Optional[int] = 45
+    flash_color: Optional[List[int]] = [255, 230, 180]
+    flash_duration: Optional[int] = 3
+
+class MusicSyncRequest(BaseModel):
+    device_ids: List[str]
+    active: bool
+    mode: Optional[str] = "beat_pulse"  # beat_pulse, spectrum_divider, energy_vu, color_organ, sound_bar, bass_strobe, single_pulse, spectrum_wave
+    sensitivity: Optional[float] = 1.0
+    base_color: Optional[List[int]] = [168, 85, 247]
+    audio_device_id: Optional[str] = None
+    color_palette: Optional[List[List[int]]] = None  # List of [R,G,B] colors for multi-color modes
+
+class ZoneConfigRequest(BaseModel):
+    left: int
+    right: int
+    top: int
+    bottom: int
+    center_x_min: int
+    center_x_max: int
+    center_y_min: int
+    center_y_max: int
 
 class AddDeviceRequest(BaseModel):
     ip: str
@@ -257,17 +318,20 @@ def get_calibration_matrix(r_seen, g_seen, b_seen):
 async def list_devices():
     """Lists discovered devices and returns cached runtime state."""
     output = []
-    for dev_id, dev in DEVICES.items():
+    for dev_id, dev in list(DEVICES.items()):
+        if dev["ip"] in IGNORED_IPS:
+            continue
         client = get_client(dev_id)
         state = {}
         if client:
             state = client.get_state()
             
+        name = CUSTOM_NAMES.get(dev_id, dev["name"])
         output.append({
             "id": dev["id"],
             "ip": dev["ip"],
             "type": dev["type"],
-            "name": dev["name"],
+            "name": name,
             "led_count": dev.get("led_count"),
             "model": dev.get("model"),
             "is_mock": dev.get("is_mock", False),
@@ -282,18 +346,59 @@ async def scan_network():
         discovered = await scan_all()
         # Keep existing mock devices but overwrite with any discovered physical devices
         for dev in discovered:
+            if dev["ip"] in IGNORED_IPS:
+                continue
+            if dev["id"] in CUSTOM_NAMES:
+                dev["name"] = CUSTOM_NAMES[dev["id"]]
             DEVICES[dev["id"]] = dev
             if dev["id"] in CLIENTS:
                 del CLIENTS[dev["id"]]
                 
+        active_devices = []
+        for dev in DEVICES.values():
+            if dev["ip"] in IGNORED_IPS:
+                continue
+            d_copy = dict(dev)
+            d_copy["name"] = CUSTOM_NAMES.get(dev["id"], dev["name"])
+            active_devices.append(d_copy)
+
         return {
             "status": "success",
-            "message": f"Scan complete. Registered {len(discovered)} physical devices.",
-            "devices": list(DEVICES.values())
+            "message": f"Scan complete. Registered {len(active_devices)} devices.",
+            "devices": active_devices
         }
     except Exception as e:
         logger.error(f"Scan failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+class RenameDeviceRequest(BaseModel):
+    name: str
+
+@app.patch("/api/devices/{device_id}")
+async def rename_device(device_id: str, req: RenameDeviceRequest):
+    """Updates the user-defined reference name of a device."""
+    if device_id not in DEVICES:
+        raise HTTPException(status_code=404, detail="Device not found")
+    new_name = req.name.strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="Device name cannot be empty")
+    CUSTOM_NAMES[device_id] = new_name
+    DEVICES[device_id]["name"] = new_name
+    save_persisted_data()
+    return {"status": "success", "device_id": device_id, "name": new_name}
+
+@app.delete("/api/devices/{device_id}")
+async def delete_device(device_id: str):
+    """Deletes a device and adds its IP to the ignored list to prevent rediscovery."""
+    if device_id not in DEVICES:
+        raise HTTPException(status_code=404, detail="Device not found")
+    ip = DEVICES[device_id]["ip"]
+    IGNORED_IPS.add(ip)
+    del DEVICES[device_id]
+    if device_id in CLIENTS:
+        del CLIENTS[device_id]
+    save_persisted_data()
+    return {"status": "success", "ignored_ip": ip}
 
 @app.post("/api/devices/add")
 async def add_device_manually(req: AddDeviceRequest):
@@ -504,7 +609,11 @@ async def set_screen_sync(req: ScreenSyncRequest):
             segments_mapping=SEGMENTS,
             mode=req.mode,
             fps=req.fps,
-            monitor_idx=req.monitor_idx
+            monitor_idx=req.monitor_idx,
+            flash_enabled=req.flash_enabled,
+            flash_threshold=req.flash_threshold,
+            flash_color=req.flash_color,
+            flash_duration=req.flash_duration
         )
     else:
         sync_worker.stop()
@@ -513,7 +622,11 @@ async def set_screen_sync(req: ScreenSyncRequest):
         "active": sync_worker.running,
         "device_ids": sync_worker.active_device_ids,
         "mode": sync_worker.mode,
-        "fps": sync_worker.fps
+        "fps": sync_worker.fps,
+        "flash_enabled": sync_worker.flash_enabled,
+        "flash_threshold": sync_worker.flash_threshold,
+        "flash_color": sync_worker.flash_color,
+        "flash_duration": sync_worker.flash_duration
     }
 
 @app.get("/api/sync/screen/status")
@@ -525,8 +638,104 @@ async def get_screen_sync_status():
         "mode": sync_worker.mode,
         "fps": sync_worker.fps,
         "monitor_idx": sync_worker.monitor_idx,
-        "segments_mapping": sync_worker.segments_mapping
+        "segments_mapping": sync_worker.segments_mapping,
+        "flash_enabled": sync_worker.flash_enabled,
+        "flash_threshold": sync_worker.flash_threshold,
+        "flash_color": sync_worker.flash_color,
+        "flash_duration": sync_worker.flash_duration
     }
+
+@app.get("/api/sync/zones")
+async def get_zone_configs():
+    """Retrieves screen detection zone boundaries."""
+    return ZONE_CONFIGS
+
+@app.post("/api/sync/zones")
+async def save_zone_configs(req: ZoneConfigRequest):
+    """Updates screen detection zone boundaries."""
+    global ZONE_CONFIGS
+    ZONE_CONFIGS = req.dict()
+    sync_worker.zone_configs = ZONE_CONFIGS
+    save_persisted_data()
+    return ZONE_CONFIGS
+
+@app.post("/api/sync/music")
+async def set_music_sync(req: MusicSyncRequest):
+    """Starts or stops real-time music synchronization."""
+    if req.active:
+        if not req.device_ids:
+            raise HTTPException(status_code=400, detail="Provide at least one device ID to sync")
+            
+        for d_id in req.device_ids:
+            if d_id not in DEVICES:
+                raise HTTPException(status_code=400, detail=f"Device {d_id} does not exist")
+                
+        # Stop screen sync if it's running
+        if sync_worker.running:
+            sync_worker.stop()
+            
+        music_sync_worker.start(
+            device_ids=req.device_ids,
+            mode=req.mode,
+            sensitivity=req.sensitivity,
+            base_color=req.base_color,
+            audio_device_id=req.audio_device_id,
+            color_palette=req.color_palette
+        )
+    else:
+        music_sync_worker.stop()
+        
+    return {
+        "active": music_sync_worker.running,
+        "device_ids": music_sync_worker.active_device_ids,
+        "mode": music_sync_worker.mode,
+        "sensitivity": music_sync_worker.sensitivity,
+        "base_color": music_sync_worker.base_color,
+        "audio_device_id": music_sync_worker.audio_device_id
+    }
+
+@app.get("/api/sync/music/status")
+async def get_music_sync_status():
+    """Returns the current status of the music sync thread."""
+    return {
+        "active": music_sync_worker.running,
+        "device_ids": music_sync_worker.active_device_ids,
+        "mode": music_sync_worker.mode,
+        "sensitivity": music_sync_worker.sensitivity,
+        "base_color": music_sync_worker.base_color,
+        "audio_device_id": music_sync_worker.audio_device_id,
+        "color_palette": music_sync_worker.color_palette
+    }
+
+@app.get("/api/sync/music/levels")
+async def get_music_live_levels():
+    """Returns real-time audio levels for the frontend spectrum visualizer."""
+    return music_sync_worker.get_live_levels()
+
+@app.get("/api/sync/music/devices")
+async def list_audio_devices():
+    """Returns a list of available speakers/output devices that support loopback capture."""
+    import soundcard as sc
+    try:
+        speakers = sc.all_speakers()
+        output = []
+        default_spk = None
+        try:
+            default_spk = sc.default_speaker()
+        except Exception:
+            pass
+            
+        for s in speakers:
+            is_default = default_spk and default_spk.id == s.id
+            output.append({
+                "id": s.id,
+                "name": s.name,
+                "is_default": bool(is_default)
+            })
+        return output
+    except Exception as e:
+        logger.error(f"Failed to list audio devices: {e}")
+        return []
 
 # ----------------------------------------------------------------------------
 # Helpers for scenes / groups / schedules
@@ -676,6 +885,146 @@ async def delete_group(group_id: str):
     del GROUPS[group_id]
     save_persisted_data()
     return {"status": "deleted"}
+
+# ----------------------------------------------------------------------------
+# Built-in Presets API
+# ----------------------------------------------------------------------------
+
+BUILTIN_PRESETS = [
+    {
+        "id": "stealth_ops",
+        "name": "Stealth Ops",
+        "description": "Blackout. Turns off all lights.",
+        "icon": "Power"
+    },
+    {
+        "id": "breach_alert",
+        "name": "Breach Alert",
+        "description": "High-intensity flashing red alert across all zones.",
+        "icon": "AlertCircle"
+    },
+    {
+        "id": "cyberpunk",
+        "name": "Cyberpunk District",
+        "description": "Deep neon purple and cyan ambient glow.",
+        "icon": "Zap"
+    },
+    {
+        "id": "cozy_bunker",
+        "name": "Cozy Command Bunker",
+        "description": "Warm 2700K low-intensity cozy light for focused sessions.",
+        "icon": "Sun"
+    },
+    {
+        "id": "chroma_flow",
+        "name": "Chroma Flow",
+        "description": "Dynamic rainbow waves for WLED and soft purple on WiZ.",
+        "icon": "Palette"
+    }
+]
+
+def apply_preset_logic(preset_id: str, device_ids: list):
+    """Executes the preset logic on a list of device IDs."""
+    applied_count = 0
+    if preset_id == "stealth_ops":
+        for dev_id in device_ids:
+            if dev_id in DEVICES and apply_control_payload(dev_id, {"on": False}):
+                applied_count += 1
+    elif preset_id == "breach_alert":
+        for dev_id in device_ids:
+            if dev_id in DEVICES:
+                dev = DEVICES[dev_id]
+                payload = {
+                    "on": True,
+                    "bri": 255,
+                    "color": [255, 0, 0]
+                }
+                if dev["type"] == "wled":
+                    payload["fx"] = 2  # Breathe / Blink effect
+                    payload["sx"] = 220
+                    payload["ix"] = 255
+                if apply_control_payload(dev_id, payload):
+                    applied_count += 1
+    elif preset_id == "cyberpunk":
+        for idx, dev_id in enumerate(device_ids):
+            if dev_id in DEVICES:
+                dev = DEVICES[dev_id]
+                color = [168, 85, 247] if idx % 2 == 0 else [6, 182, 212]
+                payload = {
+                    "on": True,
+                    "bri": 200,
+                    "color": color
+                }
+                if dev["type"] == "wled":
+                    payload["fx"] = 9  # Rainbow chase
+                    payload["sx"] = 100
+                    payload["ix"] = 128
+                if apply_control_payload(dev_id, payload):
+                    applied_count += 1
+    elif preset_id == "cozy_bunker":
+        for dev_id in device_ids:
+            if dev_id in DEVICES:
+                dev = DEVICES[dev_id]
+                payload = {
+                    "on": True,
+                    "bri": 120,
+                }
+                if dev["type"] == "wiz":
+                    payload["temp"] = 2700  # Warm White
+                else:
+                    payload["color"] = [255, 140, 45]  # Warm golden orange
+                    if dev["type"] == "wled":
+                        payload["fx"] = 0  # Solid Color
+                if apply_control_payload(dev_id, payload):
+                    applied_count += 1
+    elif preset_id == "chroma_flow":
+        for dev_id in device_ids:
+            if dev_id in DEVICES:
+                dev = DEVICES[dev_id]
+                payload = {
+                    "on": True,
+                    "bri": 220,
+                }
+                if dev["type"] == "wled":
+                    payload["fx"] = 9  # Rainbow chase
+                    payload["sx"] = 150
+                    payload["ix"] = 150
+                    payload["color"] = [255, 255, 255]
+                else:
+                    payload["color"] = [168, 85, 247] # Purple base for WiZ
+                if apply_control_payload(dev_id, payload):
+                    applied_count += 1
+    else:
+        return None
+    return applied_count
+
+@app.get("/api/presets")
+async def list_presets():
+    """Lists all built-in group presets."""
+    return BUILTIN_PRESETS
+
+@app.post("/api/presets/{preset_id}/apply")
+async def apply_preset(preset_id: str):
+    """Applies a built-in preset globally to all devices."""
+    if sync_worker.running:
+        sync_worker.stop()
+    all_dev_ids = list(DEVICES.keys())
+    applied = apply_preset_logic(preset_id, all_dev_ids)
+    if applied is None:
+        raise HTTPException(status_code=404, detail="Preset not found")
+    return {"status": "success", "applied_devices": applied}
+
+@app.post("/api/groups/{group_id}/preset/{preset_id}/apply")
+async def apply_preset_to_group(group_id: str, preset_id: str):
+    """Applies a built-in preset to a specific group."""
+    group = GROUPS.get(group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    group_dev_ids = group["device_ids"]
+    applied = apply_preset_logic(preset_id, group_dev_ids)
+    if applied is None:
+        raise HTTPException(status_code=404, detail="Preset not found")
+    return {"status": "success", "applied_devices": applied}
 
 # ----------------------------------------------------------------------------
 # Color Palette Generator API
