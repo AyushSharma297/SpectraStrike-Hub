@@ -635,21 +635,23 @@ input[type="range"]::-webkit-slider-thumb:hover {
 }
 
 .stats-card {
-  background: var(--bg-card);
+  background: rgba(30, 41, 59, 0.45);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  padding: 1rem;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 14px;
+  padding: 1rem 1.25rem;
   display: flex;
   align-items: center;
-  gap: 0.85rem;
-  transition: all 0.2s ease;
+  gap: 1rem;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 8px 20px 0 rgba(0, 0, 0, 0.2), inset 0 0 0 1px rgba(255, 255, 255, 0.05);
 }
 
 .stats-card:hover {
-  border-color: var(--border-hover);
+  border-color: rgba(255, 255, 255, 0.08);
   transform: translateY(-2px);
+  box-shadow: 0 12px 28px 0 rgba(0, 0, 0, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 
 .stats-card div {

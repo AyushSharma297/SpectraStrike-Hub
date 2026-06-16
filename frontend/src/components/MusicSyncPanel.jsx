@@ -133,11 +133,11 @@ function SpectrumVisualizer({ active }) {
     <div className="spectrum-visualizer-container">
       <canvas
         ref={canvasRef}
-        width={320}
-        height={80}
+        width={640}
+        height={120}
         style={{
           width: '100%',
-          height: '80px',
+          height: '100px',
           borderRadius: '10px',
           background: 'rgba(0, 0, 0, 0.3)',
           border: '1px solid var(--border-color)',
