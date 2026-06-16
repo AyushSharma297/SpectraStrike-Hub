@@ -1,5 +1,30 @@
 {
   "scenes": {},
-  "groups": {},
-  "schedules": {}
+  "groups": {
+    "group_43059bd6": {
+      "id": "group_43059bd6",
+      "name": "test",
+      "device_ids": [
+        "wled_192_168_1_26",
+        "wiz_192_168_1_16",
+        "wiz_192_168_1_25"
+      ]
+    }
+  },
+  "schedules": {},
+  "ignored_ips": [
+    "26.7.235.116",
+    "192.168.1.22"
+  ],
+  "custom_names": {},
+  "zone_configs": {
+    "left": 16,
+    "right": 15,
+    "top": 15,
+    "bottom": 25,
+    "center_x_min": 25,
+    "center_x_max": 75,
+    "center_y_min": 25,
+    "center_y_max": 75
+  }
 }

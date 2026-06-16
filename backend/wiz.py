@@ -104,6 +104,10 @@ class WiZClient:
                     return None
             return None
 
+        except ConnectionResetError as e:
+            # WinError 10054: Device is offline or rebooting
+            logger.debug(f"[{self.ip}] UDP connection reset (device offline): {e}")
+            return None
         except socket.error as e:
             logger.error(f"[{self.ip}] UDP error: {e}")
             return None
